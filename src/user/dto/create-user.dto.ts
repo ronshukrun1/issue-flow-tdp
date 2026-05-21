@@ -40,6 +40,13 @@ export class CreateUserDto {
   @MaxLength(100)
   fullName!: string;
 
+  /** Plain-text password (minimum 6 characters). Hashed before storage. */
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(6)
+  @MaxLength(128)
+  password!: string;
+
   /** Must be either `ADMIN` or `DEVELOPER`. */
   @IsEnum(Role, { message: 'role must be one of: ADMIN, DEVELOPER' })
   role!: Role;

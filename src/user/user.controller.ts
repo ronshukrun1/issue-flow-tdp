@@ -11,12 +11,15 @@ import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { User } from './user.entity';
+import { Roles } from '../common/decorators/roles.decorator';
+import { Role } from './role.enum';
 
 /**
  * Handles all HTTP requests for the `/users` resource.
  *
  * Each endpoint maps directly to the Users API contract defined in
- * the project README.
+ * the project README. User creation and destructive operations are
+ * restricted to administrators.
  */
 @Controller('users')
 export class UserController {
@@ -41,10 +44,13 @@ export class UserController {
   }
 
   /**
-   * `POST /users` — creates a new user.
+   * `POST /users` — creates (registers) a new user.
+   *
+   * Restricted to ADMIN users to prevent anonymous privilege escalation.
    *
    * The request body is validated against {@link CreateUserDto}.
    */
+  @Roles(Role.ADMIN)
   @Post()
   create(@Body() dto: CreateUserDto): Promise<User> {
     return this.userService.create(dto);
@@ -53,8 +59,11 @@ export class UserController {
   /**
    * `POST /users/update/:userId` — updates mutable fields of an existing user.
    *
+   * Restricted to ADMIN users.
+   *
    * The request body is validated against {@link UpdateUserDto}.
    */
+  @Roles(Role.ADMIN)
   @Post('update/:userId')
   update(
     @Param('userId', ParseIntPipe) userId: number,
@@ -65,7 +74,10 @@ export class UserController {
 
   /**
    * `DELETE /users/:userId` — permanently removes a user.
+   *
+   * Restricted to ADMIN users.
    */
+  @Roles(Role.ADMIN)
   @Delete(':userId')
   remove(@Param('userId', ParseIntPipe) userId: number): Promise<void> {
     return this.userService.remove(userId);

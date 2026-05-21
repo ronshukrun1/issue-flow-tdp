@@ -2,15 +2,30 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository, QueryFailedError } from 'typeorm';
 import { NotFoundException, ConflictException } from '@nestjs/common';
+import * as bcrypt from 'bcrypt';
 import { UserService } from './user.service';
 import { User } from './user.entity';
 import { Role } from './role.enum';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 
+jest.mock('bcrypt');
+
 const now = new Date();
 
 const mockUser: User = {
+  id: 1,
+  username: 'jdoe',
+  email: 'jdoe@example.com',
+  fullName: 'John Doe',
+  password: 'hashed-password',
+  role: Role.DEVELOPER,
+  createdAt: now,
+  updatedAt: now,
+};
+
+/** User object as returned to callers (password stripped). */
+const mockUserWithoutPassword: Omit<User, 'password'> = {
   id: 1,
   username: 'jdoe',
   email: 'jdoe@example.com',
@@ -45,6 +60,7 @@ describe('UserService', () => {
             create: jest.fn(),
             save: jest.fn(),
             remove: jest.fn(),
+            createQueryBuilder: jest.fn(),
           },
         },
       ],
@@ -88,6 +104,35 @@ describe('UserService', () => {
     });
   });
 
+  // ---------- findByUsernameWithPassword ----------
+
+  describe('findByUsernameWithPassword', () => {
+    it('should return a user with password via query builder', async () => {
+      const qb = {
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(mockUser),
+      };
+      repo.createQueryBuilder.mockReturnValue(qb as never);
+
+      const result = await service.findByUsernameWithPassword('jdoe');
+      expect(result).toEqual(mockUser);
+      expect(qb.addSelect).toHaveBeenCalledWith('user.password');
+    });
+
+    it('should return null when user not found', async () => {
+      const qb = {
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(null),
+      };
+      repo.createQueryBuilder.mockReturnValue(qb as never);
+
+      const result = await service.findByUsernameWithPassword('unknown');
+      expect(result).toBeNull();
+    });
+  });
+
   // ---------- create ----------
 
   describe('create', () => {
@@ -95,17 +140,25 @@ describe('UserService', () => {
       username: 'jdoe',
       email: 'jdoe@example.com',
       fullName: 'John Doe',
+      password: 'secret123',
       role: Role.DEVELOPER,
     };
 
-    it('should create and return a new user', async () => {
+    beforeEach(() => {
+      (bcrypt.hash as jest.Mock).mockResolvedValue('hashed-password');
+    });
+
+    it('should hash the password and create a new user', async () => {
       repo.create.mockReturnValue(mockUser);
       repo.save.mockResolvedValue(mockUser);
 
       const result = await service.create(dto);
-      expect(result).toEqual(mockUser);
-      expect(repo.create).toHaveBeenCalledWith(dto);
-      expect(repo.save).toHaveBeenCalledWith(mockUser);
+      expect(bcrypt.hash).toHaveBeenCalledWith('secret123', 10);
+      expect(repo.create).toHaveBeenCalledWith({
+        ...dto,
+        password: 'hashed-password',
+      });
+      expect(result).not.toHaveProperty('password');
     });
 
     it('should throw ConflictException on duplicate username/email', async () => {

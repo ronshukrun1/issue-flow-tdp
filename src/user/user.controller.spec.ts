@@ -14,6 +14,7 @@ const mockUser: User = {
   username: 'jdoe',
   email: 'jdoe@example.com',
   fullName: 'John Doe',
+  password: 'hashed',
   role: Role.DEVELOPER,
   createdAt: now,
   updatedAt: now,
@@ -80,6 +81,7 @@ describe('UserController', () => {
       username: 'jdoe',
       email: 'jdoe@example.com',
       fullName: 'John Doe',
+      password: 'secret123',
       role: Role.DEVELOPER,
     };
 

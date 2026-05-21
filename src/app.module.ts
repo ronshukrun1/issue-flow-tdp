@@ -1,9 +1,14 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { UserModule } from './user/user.module';
+import { AuthModule } from './auth/auth.module';
+import { ProjectModule } from './project/project.module';
+import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
+import { RolesGuard } from './auth/guards/roles.guard';
 
 /**
  * Root application module that wires up the database connection,
@@ -12,6 +17,10 @@ import { UserModule } from './user/user.module';
  * Database credentials are loaded from environment variables via
  * `@nestjs/config`. Schema synchronisation is disabled in production
  * to prevent accidental data loss.
+ *
+ * Two global guards are registered in order:
+ * 1. {@link JwtAuthGuard} — enforces JWT authentication (skipped for `@Public()` routes).
+ * 2. {@link RolesGuard} — enforces role-based access control via `@Roles()`.
  */
 @Module({
   imports: [
@@ -31,8 +40,14 @@ import { UserModule } from './user/user.module';
       }),
     }),
     UserModule,
+    AuthModule,
+    ProjectModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
+    { provide: APP_GUARD, useClass: RolesGuard },
+  ],
 })
 export class AppModule {}

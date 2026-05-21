@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, QueryFailedError } from 'typeorm';
+import * as bcrypt from 'bcrypt';
 import { User } from './user.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -13,6 +14,9 @@ import { UpdateUserDto } from './dto/update-user.dto';
 interface PostgresDriverError {
   code: string;
 }
+
+/** Number of salt rounds used by bcrypt when hashing passwords. */
+const BCRYPT_SALT_ROUNDS = 10;
 
 /**
  * Type guard that checks whether a caught error is a TypeORM
@@ -46,7 +50,7 @@ export class UserService {
   /**
    * Retrieves every user record in the system.
    *
-   * @returns An array of all {@link User} entities.
+   * @returns An array of all {@link User} entities (password excluded).
    */
   async findAll(): Promise<User[]> {
     return this.userRepository.find();
@@ -56,7 +60,7 @@ export class UserService {
    * Retrieves a single user by their primary key.
    *
    * @param id - The numeric user identifier.
-   * @returns The matching {@link User} entity.
+   * @returns The matching {@link User} entity (password excluded).
    * @throws {NotFoundException} When no user with the given ID exists.
    */
   async findOne(id: number): Promise<User> {
@@ -68,16 +72,44 @@ export class UserService {
   }
 
   /**
-   * Creates and persists a new user.
+   * Retrieves a user by username **including** the password hash.
    *
-   * @param dto - Validated creation payload.
-   * @returns The newly persisted {@link User} entity (including its generated ID).
+   * This method is intended exclusively for the authentication layer
+   * and should never be exposed through a controller directly.
+   *
+   * @param username - The login handle to look up.
+   * @returns The matching {@link User} with password, or `null`.
+   */
+  async findByUsernameWithPassword(username: string): Promise<User | null> {
+    return this.userRepository
+      .createQueryBuilder('user')
+      .addSelect('user.password')
+      .where('user.username = :username', { username })
+      .getOne();
+  }
+
+  /**
+   * Creates and persists a new user after hashing their password.
+   *
+   * @param dto - Validated creation payload (plain-text password).
+   * @returns The newly persisted {@link User} entity (password excluded from response).
    * @throws {ConflictException} When the username or email already exists (HTTP 409).
    */
   async create(dto: CreateUserDto): Promise<User> {
     try {
-      const user = this.userRepository.create(dto);
-      return await this.userRepository.save(user);
+      const hashedPassword = await bcrypt.hash(
+        dto.password,
+        BCRYPT_SALT_ROUNDS,
+      );
+      const user = this.userRepository.create({
+        ...dto,
+        password: hashedPassword,
+      });
+      const saved = await this.userRepository.save(user);
+
+      // Strip password from the returned object
+      const { password: _, ...result } = saved as User & { password: string };
+      return result as User;
     } catch (error: unknown) {
       if (isQueryFailedWithCode(error, '23505')) {
         throw new ConflictException(

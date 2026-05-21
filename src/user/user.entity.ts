@@ -5,13 +5,15 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { Exclude } from 'class-transformer';
 import { Role } from './role.enum';
 
 /**
  * Represents a registered user in the IssueFlow platform.
  *
  * Each user acts as the identity behind ticket assignments, comments,
- * and project ownership.
+ * and project ownership. The `password` column is excluded from default
+ * query results and serialised responses to prevent accidental leakage.
  */
 @Entity('users')
 export class User {
@@ -30,6 +32,16 @@ export class User {
   /** Human-readable display name. */
   @Column()
   fullName!: string;
+
+  /**
+   * Bcrypt-hashed password.
+   * `select: false` ensures this column is never loaded unless explicitly
+   * requested via `addSelect`. `@Exclude()` provides a second safety net
+   * when `ClassSerializerInterceptor` is active.
+   */
+  @Column({ select: false })
+  @Exclude()
+  password!: string;
 
   /**
    * Authorisation role that determines the user's permissions.
