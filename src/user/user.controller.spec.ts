@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { NotFoundException, BadRequestException } from '@nestjs/common';
+import { NotFoundException, ConflictException } from '@nestjs/common';
 import { UserController } from './user.controller';
 import { UserService } from './user.service';
 import { User } from './user.entity';
@@ -7,12 +7,16 @@ import { Role } from './role.enum';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 
+const now = new Date();
+
 const mockUser: User = {
   id: 1,
   username: 'jdoe',
   email: 'jdoe@example.com',
   fullName: 'John Doe',
   role: Role.DEVELOPER,
+  createdAt: now,
+  updatedAt: now,
 };
 
 describe('UserController', () => {
@@ -84,15 +88,13 @@ describe('UserController', () => {
       expect(await controller.create(dto)).toEqual(mockUser);
     });
 
-    it('should propagate BadRequestException for duplicate data', async () => {
+    it('should propagate ConflictException for duplicate data', async () => {
       service.create.mockRejectedValue(
-        new BadRequestException(
+        new ConflictException(
           'A user with this username or email already exists',
         ),
       );
-      await expect(controller.create(dto)).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(controller.create(dto)).rejects.toThrow(ConflictException);
     });
   });
 
@@ -102,7 +104,7 @@ describe('UserController', () => {
     const dto: UpdateUserDto = { fullName: 'Jane Doe', role: Role.ADMIN };
 
     it('should update and return the modified user', async () => {
-      const updated = { ...mockUser, ...dto };
+      const updated: User = { ...mockUser, ...dto };
       service.update.mockResolvedValue(updated);
       expect(await controller.update(1, dto)).toEqual(updated);
     });

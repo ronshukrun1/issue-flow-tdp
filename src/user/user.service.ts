@@ -1,13 +1,33 @@
 import {
   Injectable,
   NotFoundException,
-  BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, QueryFailedError } from 'typeorm';
 import { User } from './user.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+
+/** Shape of the PostgreSQL driver error embedded inside QueryFailedError. */
+interface PostgresDriverError {
+  code: string;
+}
+
+/**
+ * Type guard that checks whether a caught error is a TypeORM
+ * `QueryFailedError` wrapping a PostgreSQL driver error with a
+ * specific error code.
+ */
+function isQueryFailedWithCode(
+  error: unknown,
+  code: string,
+): error is QueryFailedError {
+  return (
+    error instanceof QueryFailedError &&
+    (error.driverError as PostgresDriverError)?.code === code
+  );
+}
 
 /**
  * Encapsulates all business logic for user management.
@@ -52,15 +72,15 @@ export class UserService {
    *
    * @param dto - Validated creation payload.
    * @returns The newly persisted {@link User} entity (including its generated ID).
-   * @throws {BadRequestException} When the username or email already exists.
+   * @throws {ConflictException} When the username or email already exists (HTTP 409).
    */
   async create(dto: CreateUserDto): Promise<User> {
     try {
       const user = this.userRepository.create(dto);
       return await this.userRepository.save(user);
-    } catch (error) {
-      if (error.code === '23505') {
-        throw new BadRequestException(
+    } catch (error: unknown) {
+      if (isQueryFailedWithCode(error, '23505')) {
+        throw new ConflictException(
           'A user with this username or email already exists',
         );
       }
@@ -72,7 +92,8 @@ export class UserService {
    * Updates the mutable fields of an existing user.
    *
    * Only `fullName` and `role` may be changed; the identity fields
-   * (`username`, `email`) are immutable after creation.
+   * (`username`, `email`) are immutable after creation. Uses explicit
+   * field assignment to avoid accidentally overwriting protected columns.
    *
    * @param id  - The numeric user identifier.
    * @param dto - Validated update payload (partial).
@@ -81,7 +102,14 @@ export class UserService {
    */
   async update(id: number, dto: UpdateUserDto): Promise<User> {
     const user = await this.findOne(id);
-    Object.assign(user, dto);
+
+    if (dto.fullName !== undefined) {
+      user.fullName = dto.fullName;
+    }
+    if (dto.role !== undefined) {
+      user.role = dto.role;
+    }
+
     return this.userRepository.save(user);
   }
 

@@ -1,12 +1,14 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { NotFoundException, BadRequestException } from '@nestjs/common';
+import { Repository, QueryFailedError } from 'typeorm';
+import { NotFoundException, ConflictException } from '@nestjs/common';
 import { UserService } from './user.service';
 import { User } from './user.entity';
 import { Role } from './role.enum';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+
+const now = new Date();
 
 const mockUser: User = {
   id: 1,
@@ -14,7 +16,18 @@ const mockUser: User = {
   email: 'jdoe@example.com',
   fullName: 'John Doe',
   role: Role.DEVELOPER,
+  createdAt: now,
+  updatedAt: now,
 };
+
+/**
+ * Helper that builds a realistic `QueryFailedError` with a nested
+ * `driverError` carrying a PostgreSQL error code.
+ */
+function makeQueryFailedError(code: string): QueryFailedError {
+  const driverError = Object.assign(new Error('duplicate key'), { code });
+  return new QueryFailedError('INSERT', [], driverError as Error);
+}
 
 describe('UserService', () => {
   let service: UserService;
@@ -95,11 +108,11 @@ describe('UserService', () => {
       expect(repo.save).toHaveBeenCalledWith(mockUser);
     });
 
-    it('should throw BadRequestException on duplicate username/email', async () => {
+    it('should throw ConflictException on duplicate username/email', async () => {
       repo.create.mockReturnValue(mockUser);
-      repo.save.mockRejectedValue({ code: '23505' });
+      repo.save.mockRejectedValue(makeQueryFailedError('23505'));
 
-      await expect(service.create(dto)).rejects.toThrow(BadRequestException);
+      await expect(service.create(dto)).rejects.toThrow(ConflictException);
     });
 
     it('should re-throw unexpected database errors', async () => {
@@ -117,13 +130,24 @@ describe('UserService', () => {
     const dto: UpdateUserDto = { fullName: 'Jane Doe', role: Role.ADMIN };
 
     it('should update and return the modified user', async () => {
-      const updated = { ...mockUser, ...dto };
+      const updated: User = { ...mockUser, ...dto };
       repo.findOneBy.mockResolvedValue({ ...mockUser });
       repo.save.mockResolvedValue(updated);
 
       const result = await service.update(1, dto);
       expect(result.fullName).toBe('Jane Doe');
       expect(result.role).toBe(Role.ADMIN);
+    });
+
+    it('should only update provided fields (partial update)', async () => {
+      const partialDto: UpdateUserDto = { fullName: 'Only Name' };
+      const updated: User = { ...mockUser, fullName: 'Only Name' };
+      repo.findOneBy.mockResolvedValue({ ...mockUser });
+      repo.save.mockResolvedValue(updated);
+
+      const result = await service.update(1, partialDto);
+      expect(result.fullName).toBe('Only Name');
+      expect(result.role).toBe(Role.DEVELOPER);
     });
 
     it('should throw NotFoundException when updating a non-existent user', async () => {

@@ -1,4 +1,10 @@
-import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+} from 'typeorm';
 import { Role } from './role.enum';
 
 /**
@@ -11,24 +17,32 @@ import { Role } from './role.enum';
 export class User {
   /** Auto-generated unique identifier. */
   @PrimaryGeneratedColumn()
-  id: number;
+  id!: number;
 
   /** Login handle — must be unique across the platform. */
   @Column({ unique: true })
-  username: string;
+  username!: string;
 
   /** Contact email — must be unique across the platform. */
   @Column({ unique: true })
-  email: string;
+  email!: string;
 
   /** Human-readable display name. */
   @Column()
-  fullName: string;
+  fullName!: string;
 
   /**
    * Authorisation role that determines the user's permissions.
    * Stored as a plain string in the database for readability.
    */
   @Column({ type: 'enum', enum: Role })
-  role: Role;
+  role!: Role;
+
+  /** Timestamp of when the user record was created. */
+  @CreateDateColumn()
+  createdAt!: Date;
+
+  /** Timestamp of the last update to the user record. */
+  @UpdateDateColumn()
+  updatedAt!: Date;
 }
