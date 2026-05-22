@@ -1,9 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, OptimisticLockVersionMismatchError } from 'typeorm';
 import {
   NotFoundException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import { CommentService } from './comment.service';
 import { Comment } from './comment.entity';
@@ -188,6 +189,18 @@ describe('CommentService', () => {
         NotFoundException,
       );
     });
+
+    it('should throw ConflictException on optimistic lock version mismatch', async () => {
+      repo.findOne.mockResolvedValue({ ...mockComment });
+      userService.findByUsernames.mockResolvedValue([mockUser]);
+      repo.save.mockRejectedValue(
+        new OptimisticLockVersionMismatchError('Comment', 1, 2),
+      );
+
+      await expect(service.update(1, 1, dto)).rejects.toThrow(
+        ConflictException,
+      );
+    });
   });
 
   // ---------- remove ----------
@@ -210,11 +223,12 @@ describe('CommentService', () => {
   // ---------- findMentionsForUser ----------
 
   describe('findMentionsForUser', () => {
-    it('should return paginated mentions for a user', async () => {
+    it('should return paginated mentions for a user ordered by newest first', async () => {
       userService.findOne.mockResolvedValue(mockUser);
       const qb = {
         innerJoin: jest.fn().mockReturnThis(),
         leftJoinAndSelect: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
         getManyAndCount: jest.fn().mockResolvedValue([[mockComment], 1]),
@@ -223,6 +237,7 @@ describe('CommentService', () => {
 
       const result = await service.findMentionsForUser(1, 1, 10);
       expect(result).toEqual({ data: [mockComment], total: 1, page: 1 });
+      expect(qb.orderBy).toHaveBeenCalledWith('comment.createdAt', 'DESC');
     });
 
     it('should throw NotFoundException when user does not exist', async () => {

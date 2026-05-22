@@ -9,6 +9,7 @@ import {
   MaxLength,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { TicketStatus } from '../enums/ticket-status.enum';
 import { TicketPriority } from '../enums/ticket-priority.enum';
 import { TicketType } from '../enums/ticket-type.enum';
@@ -36,18 +37,21 @@ export class CreateTicketDto {
   description!: string;
 
   /** Must be one of: TODO, IN_PROGRESS, IN_REVIEW, DONE. */
+  @ApiProperty({ enum: TicketStatus })
   @IsEnum(TicketStatus, {
     message: 'status must be one of: TODO, IN_PROGRESS, IN_REVIEW, DONE',
   })
   status!: TicketStatus;
 
   /** Must be one of: LOW, MEDIUM, HIGH, CRITICAL. */
+  @ApiProperty({ enum: TicketPriority })
   @IsEnum(TicketPriority, {
     message: 'priority must be one of: LOW, MEDIUM, HIGH, CRITICAL',
   })
   priority!: TicketPriority;
 
   /** Must be one of: BUG, FEATURE, TECHNICAL. */
+  @ApiProperty({ enum: TicketType })
   @IsEnum(TicketType, {
     message: 'type must be one of: BUG, FEATURE, TECHNICAL',
   })
@@ -58,11 +62,13 @@ export class CreateTicketDto {
   projectId!: number;
 
   /** Optional assignee user ID. */
+  @ApiPropertyOptional()
   @IsOptional()
   @IsInt()
   assigneeId?: number;
 
   /** Optional due date in ISO-8601 format. */
+  @ApiPropertyOptional({ example: '2025-12-31T23:59:59.000Z' })
   @IsOptional()
   @IsDateString()
   dueDate?: string;

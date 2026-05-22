@@ -109,6 +109,20 @@ describe('AuthService', () => {
     });
   });
 
+  // ---------- token revocation ----------
+
+  describe('revokeToken / isTokenRevoked', () => {
+    it('should mark a token as revoked', () => {
+      expect(service.isTokenRevoked('token-abc')).toBe(false);
+      service.revokeToken('token-abc');
+      expect(service.isTokenRevoked('token-abc')).toBe(true);
+    });
+
+    it('should return false for tokens that were never revoked', () => {
+      expect(service.isTokenRevoked('unknown-token')).toBe(false);
+    });
+  });
+
   // ---------- getProfile ----------
 
   describe('getProfile', () => {

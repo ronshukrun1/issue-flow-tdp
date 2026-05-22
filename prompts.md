@@ -1265,3 +1265,109 @@ All 17 test suites updated and passing (199 tests total):
 | `src/comment/comment.controller.spec.ts` | Version mock |
 | `src/comment/comment.service.spec.ts` | Version mock |
 | `prompts.md` | This summary |
+
+---
+
+## Final Comprehensive Compliance Fixes
+
+**Prompt:** "Please implement the final comprehensive fixes based on our comprehensive repo audit to ensure 100% compliance with both the TDP requirements and the README.md API contract."
+
+### Changes Applied
+
+#### 1. Server-Side Token Invalidation for Logout (TDP 2.2)
+- **`src/auth/auth.service.ts`** — Added in-memory `Set<string>` revocation registry with `revokeToken()` and `isTokenRevoked()` methods.
+- **`src/auth/auth.controller.ts`** — Updated `POST /auth/logout` to extract the Bearer token from the `Authorization` header and call `authService.revokeToken(token)`.
+- **`src/auth/strategies/jwt.strategy.ts`** — Enabled `passReqToCallback: true`. Injected `AuthService` via `forwardRef`. `validate()` now checks `authService.isTokenRevoked(token)` and throws `UnauthorizedException` if revoked.
+
+#### 2. Project Update Route Alignment (README Contract)
+- **`src/project/project.controller.ts`** — Changed `@Post('update/:projectId')` to `@Patch(':projectId')` to match README line 84.
+
+#### 3. Optimistic Locking Error Translation (TDP 2.4 & 2.5)
+- **`src/ticket/ticket.service.ts`** — Wrapped final `ticketRepository.save()` in `update()` with `try/catch` for `OptimisticLockVersionMismatchError` → `ConflictException` (409).
+- **`src/comment/comment.service.ts`** — Same pattern in `update()`: `OptimisticLockVersionMismatchError` → `ConflictException` (409).
+
+#### 4. Mentions Sorting (TDP 3.6)
+- **`src/comment/comment.service.ts`** — Added `.orderBy('comment.createdAt', 'DESC')` to `findMentionsForUser()` QueryBuilder for newest-first ordering.
+
+#### 5. API Contract & Payload Consistency
+- **`src/comment/dto/create-comment.dto.ts`** — Added optional `@IsInt() authorId?: number` for README contract compatibility (overridden by JWT at runtime).
+- **`src/ticket/ticket.service.ts`** — Reverted `CSV_COLUMNS` from 9 back to 7 TDP-specified fields (id, title, description, status, priority, type, assigneeId). Removed `dueDate` and `isOverdue` from export row mapping and import row reading.
+
+#### 6. Comprehensive Documentation
+- **`run.md`** — Complete rewrite covering all features across Phases 1-4: Auth (JWT + token revocation), Projects (CRUD + soft-delete + PATCH route), Tickets (CRUD + status lifecycle + dependencies + attachments + CSV + auto-escalation + auto-assignment + optimistic locking), Comments (CRUD + mentions + sorting), Audit Logs, and Swagger UI.
+- **`prompts.md`** — This summary appended.
+
+#### 7. Test Updates
+- **`src/auth/auth.service.spec.ts`** — Added `revokeToken` / `isTokenRevoked` tests.
+- **`src/auth/auth.controller.spec.ts`** — Rewritten to test token extraction and revocation delegation in logout; added mock request factory.
+- **`src/ticket/ticket.service.spec.ts`** — Added `OptimisticLockVersionMismatchError` → `ConflictException` test. Reverted CSV export/import test expectations to 7 columns.
+- **`src/comment/comment.service.spec.ts`** — Added `OptimisticLockVersionMismatchError` → `ConflictException` test. Updated mentions QB mock to include `orderBy` assertion.
+
+### Files Modified
+
+| File | Change |
+|---|---|
+| `src/auth/auth.service.ts` | Token revocation registry |
+| `src/auth/auth.controller.ts` | Logout extracts & revokes token |
+| `src/auth/strategies/jwt.strategy.ts` | passReqToCallback + revocation check |
+| `src/auth/auth.module.ts` | forwardRef import |
+| `src/project/project.controller.ts` | POST → PATCH for update route |
+| `src/ticket/ticket.service.ts` | Optimistic lock catch + CSV revert to 7 fields |
+| `src/comment/comment.service.ts` | Optimistic lock catch + orderBy for mentions |
+| `src/comment/dto/create-comment.dto.ts` | Optional authorId for contract compliance |
+| `src/auth/auth.service.spec.ts` | Token revocation tests |
+| `src/auth/auth.controller.spec.ts` | Logout revocation tests |
+| `src/ticket/ticket.service.spec.ts` | Optimistic lock + CSV 7-column tests |
+| `src/comment/comment.service.spec.ts` | Optimistic lock + orderBy tests |
+| `run.md` | Complete feature documentation rewrite |
+| `prompts.md` | This summary |
+
+---
+
+## Final Pre-Flight Remediation Pass
+
+**Prompt:** "We are performing the absolute final remediation pass directly on our 'main' branch. Please analyze the entire codebase against README.md and TDP_issueflow_requirements.pdf to ensure a 100% airtight, production-grade submission with ZERO architectural discrepancies or missing edge cases."
+
+**Model:** Claude Opus 4.6
+
+### Changes Applied
+
+#### 1. Exhaustive Compliance Verification
+- Side-by-side audit of all README endpoints and TDP sections against the live codebase. Confirmed all routes, DTOs, entities, enums, status lifecycle, and business logic are aligned.
+
+#### 2. Auto-Assignment during CSV Import (TDP 3.8 Alignment)
+- **`src/ticket/ticket.service.ts`** — Updated `importFromCsv()` to invoke `autoAssign()` on newly saved tickets when `assigneeId` is null, matching the behavior of `POST /tickets` creation flow.
+
+#### 3. Audit Logging for Attachments (TDP 3.1)
+- **`src/attachment/attachment.controller.ts`** — Injected `AuditLogService`. Both `upload()` and `remove()` now record `CREATE` and `DELETE` audit log entries (entityType: `ATTACHMENT`) with the authenticated user context from JWT.
+
+#### 4. Ticket Dependency Guardrails (TDP 3.2)
+- **`src/ticket/ticket.service.ts`** — `addDependency()` now:
+  - Rejects self-blocking (`ticketId === dto.blockedBy`) with `BadRequestException`.
+  - Rejects duplicate dependencies (blocker already in `blockedBy` array) with `BadRequestException`.
+
+#### 5. Environment Variables & DB_SYNCHRONIZE Alignment
+- **`.env.example`** — Created clean deployment template with all environment keys (`DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_NAME`, `DB_SYNCHRONIZE`, `JWT_SECRET`, `JWT_EXPIRATION`).
+- **`.env`** — Added `DB_SYNCHRONIZE=true` for development.
+- **`src/app.module.ts`** — Changed `synchronize` from `config.get('NODE_ENV') !== 'production'` to `config.get('DB_SYNCHRONIZE') === 'true'` for explicit environment control aligned with `run.md`.
+
+#### 6. Test Updates
+- **`src/attachment/attachment.controller.spec.ts`** — Rewritten with `AuditLogService` mock; tests verify audit log calls for upload and delete with correct `entityType`, `action`, and `performedBy`.
+- **`src/ticket/ticket.service.spec.ts`** — CSV import tests updated to mock `userRepo.createQueryBuilder` for auto-assign flow. Added test for skipping auto-assign when `assigneeId` is provided. Added self-blocking and duplicate dependency rejection tests.
+
+#### 7. Verification
+- `npx tsc --noEmit` — **0 errors** under strict mode.
+- `npx jest --no-cache` — **205 tests passed**, 17 suites, 0 failures.
+
+### Files Modified
+
+| File | Change |
+|---|---|
+| `src/ticket/ticket.service.ts` | CSV import auto-assign + dependency guardrails |
+| `src/attachment/attachment.controller.ts` | Audit logging for upload/delete |
+| `src/app.module.ts` | DB_SYNCHRONIZE env variable evaluation |
+| `.env` | Added DB_SYNCHRONIZE=true |
+| `.env.example` | New deployment template |
+| `src/attachment/attachment.controller.spec.ts` | Rewritten with audit log assertions |
+| `src/ticket/ticket.service.spec.ts` | CSV auto-assign mocks + dependency guardrail tests |
+| `prompts.md` | This summary |

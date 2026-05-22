@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Delete,
   Param,
   Body,
@@ -10,6 +11,7 @@ import {
   Inject,
   forwardRef,
 } from '@nestjs/common';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { Request } from 'express';
 import { ProjectService } from './project.service';
 import { CreateProjectDto } from './dto/create-project.dto';
@@ -28,6 +30,8 @@ import { AuditAction } from '../audit-log/enums/audit-action.enum';
  * defined in the project README. Administrative endpoints
  * (deleted listing, restore) are restricted to ADMIN users.
  */
+@ApiTags('Projects')
+@ApiBearerAuth()
 @Controller('projects')
 export class ProjectController {
   constructor(
@@ -99,9 +103,9 @@ export class ProjectController {
   }
 
   /**
-   * `POST /projects/update/:projectId` — updates mutable fields of an existing project.
+   * `PATCH /projects/:projectId` — updates mutable fields of an existing project.
    */
-  @Post('update/:projectId')
+  @Patch(':projectId')
   async update(
     @Param('projectId', ParseIntPipe) projectId: number,
     @Body() dto: UpdateProjectDto,

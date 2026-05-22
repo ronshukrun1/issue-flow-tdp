@@ -2,11 +2,12 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
   Inject,
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, OptimisticLockVersionMismatchError } from 'typeorm';
 import { Comment } from './comment.entity';
 import { CreateCommentDto } from './dto/create-comment.dto';
 import { UpdateCommentDto } from './dto/update-comment.dto';
@@ -114,7 +115,16 @@ export class CommentService {
     comment.content = dto.content;
     comment.mentionedUsers = await this.resolveMentions(dto.content);
 
-    await this.commentRepository.save(comment);
+    try {
+      await this.commentRepository.save(comment);
+    } catch (error: unknown) {
+      if (error instanceof OptimisticLockVersionMismatchError) {
+        throw new ConflictException(
+          'Comment was modified by another user. Please reload and retry.',
+        );
+      }
+      throw error;
+    }
 
     return this.commentRepository.findOneOrFail({
       where: { id: commentId },
@@ -156,6 +166,7 @@ export class CommentService {
         userId,
       })
       .leftJoinAndSelect('comment.mentionedUsers', 'mentionedUser')
+      .orderBy('comment.createdAt', 'DESC')
       .skip((page - 1) * pageSize)
       .take(pageSize)
       .getManyAndCount();

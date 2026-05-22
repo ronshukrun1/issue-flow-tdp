@@ -3,6 +3,7 @@ import {
   Get,
   Query,
 } from '@nestjs/common';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { AuditLogService } from './audit-log.service';
 import { AuditLog } from './audit-log.entity';
 
@@ -12,6 +13,8 @@ import { AuditLog } from './audit-log.entity';
  * `GET /audit-logs` supports optional query parameters to filter
  * results by `entityType`, `entityId`, `action`, and `actor`.
  */
+@ApiTags('Audit Logs')
+@ApiBearerAuth()
 @Controller('audit-logs')
 export class AuditLogController {
   constructor(private readonly auditLogService: AuditLogService) {}

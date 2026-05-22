@@ -7,6 +7,7 @@ import {
   MaxLength,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { ApiProperty } from '@nestjs/swagger';
 import { Role } from '../role.enum';
 
 /**
@@ -48,6 +49,7 @@ export class CreateUserDto {
   password!: string;
 
   /** Must be either `ADMIN` or `DEVELOPER`. */
+  @ApiProperty({ enum: Role })
   @IsEnum(Role, { message: 'role must be one of: ADMIN, DEVELOPER' })
   role!: Role;
 }

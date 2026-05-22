@@ -15,6 +15,7 @@ import {
   ParseFilePipe,
   FileTypeValidator,
 } from '@nestjs/common';
+import { ApiTags, ApiBearerAuth, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Request, Response } from 'express';
 import { TicketService } from './ticket.service';
@@ -34,6 +35,8 @@ import { AuditAction } from '../audit-log/enums/audit-action.enum';
  * Administrative operations (listing deleted, restoring) require
  * the ADMIN role. State-changing actions are recorded in the audit log.
  */
+@ApiTags('Tickets')
+@ApiBearerAuth()
 @Controller('tickets')
 export class TicketController {
   constructor(
@@ -88,6 +91,17 @@ export class TicketController {
    */
   @Post('import')
   @UseInterceptors(FileInterceptor('file'))
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file', 'projectId'],
+      properties: {
+        file: { type: 'string', format: 'binary' },
+        projectId: { type: 'integer' },
+      },
+    },
+  })
   importCsv(
     @UploadedFile(
       new ParseFilePipe({

@@ -9,11 +9,13 @@ import { JwtPayload } from './interfaces/jwt-payload.interface';
 /**
  * Handles credential validation and JWT token lifecycle.
  *
- * Reads `JWT_EXPIRATION` from the environment so the `expiresIn`
- * value in the login response always matches the actual token TTL.
+ * Maintains an in-memory token revocation registry so that
+ * `POST /auth/logout` can invalidate tokens server-side (TDP 2.2).
  */
 @Injectable()
 export class AuthService {
+  private readonly revokedTokens = new Set<string>();
+
   constructor(
     private readonly userService: UserService,
     private readonly jwtService: JwtService,
@@ -62,5 +64,24 @@ export class AuthService {
    */
   async getProfile(userId: number) {
     return this.userService.findOne(userId);
+  }
+
+  /**
+   * Adds a token to the server-side revocation registry.
+   *
+   * @param token - The raw JWT string to revoke.
+   */
+  revokeToken(token: string): void {
+    this.revokedTokens.add(token);
+  }
+
+  /**
+   * Checks whether a token has been revoked.
+   *
+   * @param token - The raw JWT string to check.
+   * @returns `true` if the token was previously revoked via {@link revokeToken}.
+   */
+  isTokenRevoked(token: string): boolean {
+    return this.revokedTokens.has(token);
   }
 }

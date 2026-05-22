@@ -1,4 +1,6 @@
-import { Controller, Post, Get, Body, Request } from '@nestjs/common';
+import { Controller, Post, Get, Body, Req } from '@nestjs/common';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
+import { Request } from 'express';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { Public } from '../common/decorators/public.decorator';
@@ -6,6 +8,8 @@ import { Public } from '../common/decorators/public.decorator';
 /**
  * Handles authentication-related HTTP endpoints.
  */
+@ApiTags('Auth')
+@ApiBearerAuth()
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
@@ -27,19 +31,25 @@ export class AuthController {
    * Requires a valid JWT in the `Authorization: Bearer <token>` header.
    */
   @Get('me')
-  getProfile(@Request() req: { user: { userId: number } }) {
-    return this.authService.getProfile(req.user.userId);
+  getProfile(@Req() req: Request) {
+    return this.authService.getProfile(
+      (req.user as { userId: number }).userId,
+    );
   }
 
   /**
-   * `POST /auth/logout` — client-side logout acknowledgement.
+   * `POST /auth/logout` — invalidates the current JWT token.
    *
-   * With stateless JWT the server cannot revoke tokens. The client
-   * is expected to discard the token. This endpoint exists to satisfy
-   * the API contract and can later be extended with a token deny-list.
+   * Extracts the Bearer token from the `Authorization` header and
+   * adds it to the server-side revocation registry (TDP 2.2).
    */
   @Post('logout')
-  logout() {
+  logout(@Req() req: Request): { message: string } {
+    const authHeader = req.headers.authorization;
+    if (authHeader) {
+      const token = authHeader.replace(/^Bearer\s+/i, '');
+      this.authService.revokeToken(token);
+    }
     return { message: 'Logged out successfully' };
   }
 }

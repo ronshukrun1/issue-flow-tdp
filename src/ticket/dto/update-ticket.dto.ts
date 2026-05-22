@@ -8,6 +8,7 @@ import {
   MaxLength,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import { TicketStatus } from '../enums/ticket-status.enum';
 import { TicketPriority } from '../enums/ticket-priority.enum';
 
@@ -35,6 +36,7 @@ export class UpdateTicketDto {
   description?: string;
 
   /** Updated status — must follow the forward-only lifecycle. */
+  @ApiPropertyOptional({ enum: TicketStatus })
   @IsOptional()
   @IsEnum(TicketStatus, {
     message: 'status must be one of: TODO, IN_PROGRESS, IN_REVIEW, DONE',
@@ -42,6 +44,7 @@ export class UpdateTicketDto {
   status?: TicketStatus;
 
   /** Updated priority. */
+  @ApiPropertyOptional({ enum: TicketPriority })
   @IsOptional()
   @IsEnum(TicketPriority, {
     message: 'priority must be one of: LOW, MEDIUM, HIGH, CRITICAL',

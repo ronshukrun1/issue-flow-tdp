@@ -1,14 +1,32 @@
-import { IsString, IsNotEmpty, MinLength, MaxLength } from 'class-validator';
+import {
+  IsString,
+  IsNotEmpty,
+  IsOptional,
+  IsInt,
+  MinLength,
+  MaxLength,
+} from 'class-validator';
 import { Transform } from 'class-transformer';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 
 /**
  * Data-transfer object for adding a comment to a ticket.
  *
- * The `authorId` is NOT accepted from the client — it is extracted
- * from the authenticated user's JWT payload (`req.user.userId`)
- * at the controller level to prevent author spoofing.
+ * The `authorId` field is accepted for API contract compatibility
+ * (README specifies `{ "authorId": 2, "content": "..." }`) but is
+ * **overridden at runtime** by the authenticated user's JWT payload
+ * (`req.user.userId`) to prevent author spoofing.
  */
 export class CreateCommentDto {
+  /**
+   * Accepted for contract compatibility but overridden by the
+   * authenticated user's ID from the JWT payload.
+   */
+  @ApiPropertyOptional({ description: 'Ignored at runtime; author is derived from JWT' })
+  @IsOptional()
+  @IsInt()
+  authorId?: number;
+
   /** Comment body (1-5000 characters). May contain `@username` mentions. */
   @Transform(({ value }: { value: string }) => value?.trim())
   @IsString()

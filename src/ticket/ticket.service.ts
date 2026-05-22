@@ -2,11 +2,12 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
   Inject,
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not } from 'typeorm';
+import { Repository, Not, OptimisticLockVersionMismatchError } from 'typeorm';
 import { stringify } from 'csv-stringify/sync';
 import { parse } from 'csv-parse';
 import { Ticket } from './ticket.entity';
@@ -202,7 +203,16 @@ export class TicketService {
     if (dto.assigneeId !== undefined) ticket.assigneeId = dto.assigneeId;
     if (dto.dueDate !== undefined) ticket.dueDate = new Date(dto.dueDate);
 
-    return this.ticketRepository.save(ticket);
+    try {
+      return await this.ticketRepository.save(ticket);
+    } catch (error: unknown) {
+      if (error instanceof OptimisticLockVersionMismatchError) {
+        throw new ConflictException(
+          'Ticket was modified by another user. Please reload and retry.',
+        );
+      }
+      throw error;
+    }
   }
 
   /**
@@ -331,7 +341,7 @@ export class TicketService {
 
   // ── CSV Export / Import ─────────────────────────────────────────
 
-  /** Columns included in CSV export and expected on import. */
+  /** Columns included in CSV export and expected on import (TDP 3.4). */
   private static readonly CSV_COLUMNS = [
     'id',
     'title',
@@ -340,8 +350,6 @@ export class TicketService {
     'priority',
     'type',
     'assigneeId',
-    'dueDate',
-    'isOverdue',
   ] as const;
 
   /**
@@ -365,8 +373,6 @@ export class TicketService {
       priority: t.priority,
       type: t.type,
       assigneeId: t.assigneeId ?? '',
-      dueDate: t.dueDate ? t.dueDate.toISOString() : '',
-      isOverdue: t.isOverdue,
     }));
 
     return stringify(rows, {
@@ -431,12 +437,13 @@ export class TicketService {
         type: row['type'] as TicketType,
         projectId,
         assigneeId: row['assigneeId'] ? Number(row['assigneeId']) : null,
-        dueDate: row['dueDate'] ? new Date(row['dueDate']) : null,
-        isOverdue: row['isOverdue'] === 'true',
       });
 
       try {
-        await this.ticketRepository.save(ticket);
+        const saved = await this.ticketRepository.save(ticket);
+        if (saved.assigneeId === null) {
+          await this.autoAssign(saved);
+        }
         created++;
       } catch (error: unknown) {
         failed++;
@@ -478,13 +485,19 @@ export class TicketService {
    * Adds a blocker dependency to a ticket.
    *
    * Both tickets must exist and belong to the same project.
+   * A ticket cannot block itself, and duplicate dependencies are rejected.
    *
    * @param ticketId - The ticket that is being blocked.
    * @param dto      - Contains the `blockedBy` ticket ID.
    * @throws {NotFoundException} When either ticket does not exist.
-   * @throws {BadRequestException} When the tickets belong to different projects.
+   * @throws {BadRequestException} When the tickets belong to different projects,
+   *         a ticket tries to block itself, or the dependency already exists.
    */
   async addDependency(ticketId: number, dto: AddDependencyDto): Promise<void> {
+    if (ticketId === dto.blockedBy) {
+      throw new BadRequestException('A ticket cannot block itself');
+    }
+
     const ticket = await this.ticketRepository.findOne({
       where: { id: ticketId },
       relations: ['blockedBy'],
@@ -498,6 +511,12 @@ export class TicketService {
     if (ticket.projectId !== blocker.projectId) {
       throw new BadRequestException(
         'Both tickets must belong to the same project',
+      );
+    }
+
+    if (ticket.blockedBy.some((b) => b.id === dto.blockedBy)) {
+      throw new BadRequestException(
+        `Ticket ${ticketId} is already blocked by ticket ${dto.blockedBy}`,
       );
     }
 

@@ -9,6 +9,7 @@ import {
   Req,
   ParseIntPipe,
 } from '@nestjs/common';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { Request } from 'express';
 import { CommentService } from './comment.service';
 import { CreateCommentDto } from './dto/create-comment.dto';
@@ -25,6 +26,8 @@ import { AuditAction } from '../audit-log/enums/audit-action.enum';
  * preventing author spoofing. State-changing actions are recorded
  * in the audit log.
  */
+@ApiTags('Comments')
+@ApiBearerAuth()
 @Controller('tickets/:ticketId/comments')
 export class CommentController {
   constructor(

@@ -6,6 +6,7 @@ import {
   MaxLength,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Role } from '../role.enum';
 
 /**
@@ -24,6 +25,7 @@ export class UpdateUserDto {
   fullName?: string;
 
   /** Updated role — must be either `ADMIN` or `DEVELOPER`. */
+  @ApiPropertyOptional({ enum: Role })
   @IsOptional()
   @IsEnum(Role, { message: 'role must be one of: ADMIN, DEVELOPER' })
   role?: Role;

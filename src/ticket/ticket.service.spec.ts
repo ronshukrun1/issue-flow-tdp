@@ -1,9 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, OptimisticLockVersionMismatchError } from 'typeorm';
 import {
   NotFoundException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import { TicketService } from './ticket.service';
 import { Ticket } from './ticket.entity';
@@ -307,6 +308,17 @@ describe('TicketService', () => {
       expect(result.isOverdue).toBe(false);
       expect(result.priority).toBe(TicketPriority.LOW);
     });
+
+    it('should throw ConflictException on optimistic lock version mismatch', async () => {
+      repo.findOneBy.mockResolvedValue({ ...mockTicket });
+      repo.save.mockRejectedValue(
+        new OptimisticLockVersionMismatchError('Ticket', 1, 2),
+      );
+
+      await expect(service.update(1, { title: 'Race' })).rejects.toThrow(
+        ConflictException,
+      );
+    });
   });
 
   // ---------- softRemove ----------
@@ -383,26 +395,15 @@ describe('TicketService', () => {
   // ---------- exportToCsv ----------
 
   describe('exportToCsv', () => {
-    it('should produce a valid CSV with header including dueDate and isOverdue', async () => {
+    it('should produce a valid CSV with exactly 7 TDP-specified columns', async () => {
       projectService.findOne.mockResolvedValue({} as never);
       repo.find.mockResolvedValue([mockTicket]);
 
       const csv = await service.exportToCsv(1);
-      expect(csv).toContain('id,title,description,status,priority,type,assigneeId,dueDate,isOverdue');
+      expect(csv).toContain('id,title,description,status,priority,type,assigneeId');
+      expect(csv).not.toContain('dueDate');
+      expect(csv).not.toContain('isOverdue');
       expect(csv).toContain('Fix login bug');
-    });
-
-    it('should export dueDate as ISO string and isOverdue as boolean', async () => {
-      const due = new Date('2025-06-01T00:00:00.000Z');
-      const ticketWithDue = { ...mockTicket, dueDate: due, isOverdue: true };
-      projectService.findOne.mockResolvedValue({} as never);
-      repo.find.mockResolvedValue([ticketWithDue]);
-
-      const csv = await service.exportToCsv(1);
-      expect(csv).toContain(due.toISOString());
-      const dataLine = csv.split('\n')[1];
-      const fields = dataLine.split(',');
-      expect(fields[fields.length - 1].trim()).toBe('1');
     });
 
     it('should return header-only CSV when no tickets exist', async () => {
@@ -418,14 +419,16 @@ describe('TicketService', () => {
   // ---------- importFromCsv ----------
 
   describe('importFromCsv', () => {
-    it('should create tickets from valid CSV rows', async () => {
+    it('should create tickets from valid CSV rows and trigger auto-assign', async () => {
       projectService.findOne.mockResolvedValue({} as never);
       repo.create.mockReturnValue(mockTicket);
       repo.save.mockResolvedValue(mockTicket);
+      const qb = mockUserRepoQb();
+      qb.getRawOne.mockResolvedValue(undefined);
 
       const csv = [
-        'title,description,status,priority,type,assigneeId,dueDate,isOverdue',
-        'Bug,Desc,TODO,HIGH,BUG,,,false',
+        'title,description,status,priority,type,assigneeId',
+        'Bug,Desc,TODO,HIGH,BUG,',
       ].join('\n');
 
       const result = await service.importFromCsv(1, Buffer.from(csv));
@@ -433,31 +436,12 @@ describe('TicketService', () => {
       expect(result.failed).toBe(0);
     });
 
-    it('should import dueDate and isOverdue from CSV', async () => {
-      projectService.findOne.mockResolvedValue({} as never);
-      repo.create.mockImplementation((data) => data as Ticket);
-      repo.save.mockImplementation(async (t) => t as Ticket);
-
-      const csv = [
-        'title,description,status,priority,type,assigneeId,dueDate,isOverdue',
-        'Bug,Desc,TODO,HIGH,BUG,,2025-06-01T00:00:00.000Z,true',
-      ].join('\n');
-
-      await service.importFromCsv(1, Buffer.from(csv));
-      expect(repo.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          dueDate: expect.any(Date),
-          isOverdue: true,
-        }),
-      );
-    });
-
     it('should collect errors for invalid rows', async () => {
       projectService.findOne.mockResolvedValue({} as never);
 
       const csv = [
-        'title,description,status,priority,type,assigneeId,dueDate,isOverdue',
-        ',Desc,INVALID,HIGH,BUG,,,false',
+        'title,description,status,priority,type,assigneeId',
+        ',Desc,INVALID,HIGH,BUG,',
       ].join('\n');
 
       const result = await service.importFromCsv(1, Buffer.from(csv));
@@ -470,16 +454,34 @@ describe('TicketService', () => {
       projectService.findOne.mockResolvedValue({} as never);
       repo.create.mockReturnValue(mockTicket);
       repo.save.mockResolvedValue(mockTicket);
+      const qb = mockUserRepoQb();
+      qb.getRawOne.mockResolvedValue(undefined);
 
       const csv = [
-        'title,description,status,priority,type,assigneeId,dueDate,isOverdue',
-        'Good,Desc,TODO,HIGH,BUG,,,false',
-        ',Bad,INVALID,HIGH,BUG,,,false',
+        'title,description,status,priority,type,assigneeId',
+        'Good,Desc,TODO,HIGH,BUG,',
+        ',Bad,INVALID,HIGH,BUG,',
       ].join('\n');
 
       const result = await service.importFromCsv(1, Buffer.from(csv));
       expect(result.created).toBe(1);
       expect(result.failed).toBe(1);
+    });
+
+    it('should skip auto-assign when assigneeId is provided in CSV', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      const assigned = { ...mockTicket, assigneeId: 5 };
+      repo.create.mockReturnValue(assigned);
+      repo.save.mockResolvedValue(assigned);
+
+      const csv = [
+        'title,description,status,priority,type,assigneeId',
+        'Bug,Desc,TODO,HIGH,BUG,5',
+      ].join('\n');
+
+      const result = await service.importFromCsv(1, Buffer.from(csv));
+      expect(result.created).toBe(1);
+      expect(userRepo.createQueryBuilder).not.toHaveBeenCalled();
     });
   });
 
@@ -498,6 +500,18 @@ describe('TicketService', () => {
     it('should reject when tickets belong to different projects', async () => {
       const blocker = { ...mockTicket, id: 42, projectId: 99 };
       repo.findOne.mockResolvedValue({ ...mockTicket, blockedBy: [] } as Ticket);
+      repo.findOneBy.mockResolvedValue(blocker);
+
+      await expect(service.addDependency(1, { blockedBy: 42 })).rejects.toThrow(BadRequestException);
+    });
+
+    it('should reject self-blocking', async () => {
+      await expect(service.addDependency(1, { blockedBy: 1 })).rejects.toThrow(BadRequestException);
+    });
+
+    it('should reject duplicate dependencies', async () => {
+      const blocker = { ...mockTicket, id: 42 };
+      repo.findOne.mockResolvedValue({ ...mockTicket, blockedBy: [blocker] } as Ticket);
       repo.findOneBy.mockResolvedValue(blocker);
 
       await expect(service.addDependency(1, { blockedBy: 42 })).rejects.toThrow(BadRequestException);

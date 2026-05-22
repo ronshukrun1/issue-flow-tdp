@@ -42,7 +42,7 @@ import { RolesGuard } from './auth/guards/roles.guard';
         password: config.get<string>('DB_PASSWORD', 'issueflow'),
         database: config.get<string>('DB_NAME', 'issueflow'),
         autoLoadEntities: true,
-        synchronize: config.get<string>('NODE_ENV') !== 'production',
+        synchronize: config.get<string>('DB_SYNCHRONIZE') === 'true',
       }),
     }),
     ScheduleModule.forRoot(),

@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { UnauthorizedException } from '@nestjs/common';
+import { Request } from 'express';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { User } from '../user/user.entity';
@@ -18,6 +19,12 @@ const mockProfile: Omit<User, 'password'> = {
   updatedAt: now,
 };
 
+const mockRequest = (token?: string): Request =>
+  ({
+    headers: { authorization: token ? `Bearer ${token}` : undefined },
+    user: { userId: 1, username: 'jdoe', role: Role.DEVELOPER },
+  }) as unknown as Request;
+
 describe('AuthController', () => {
   let controller: AuthController;
   let service: jest.Mocked<AuthService>;
@@ -31,6 +38,8 @@ describe('AuthController', () => {
           useValue: {
             login: jest.fn(),
             getProfile: jest.fn(),
+            revokeToken: jest.fn(),
+            isTokenRevoked: jest.fn(),
           },
         },
       ],
@@ -77,7 +86,7 @@ describe('AuthController', () => {
     it('should return the authenticated user profile', async () => {
       service.getProfile.mockResolvedValue(mockProfile as User);
 
-      const req = { user: { userId: 1 } };
+      const req = mockRequest('some-token');
       expect(await controller.getProfile(req)).toEqual(mockProfile);
       expect(service.getProfile).toHaveBeenCalledWith(1);
     });
@@ -86,10 +95,18 @@ describe('AuthController', () => {
   // ---------- logout ----------
 
   describe('logout', () => {
-    it('should return a success message', () => {
-      expect(controller.logout()).toEqual({
-        message: 'Logged out successfully',
-      });
+    it('should extract the token and revoke it', () => {
+      const req = mockRequest('my-jwt-token');
+      const result = controller.logout(req);
+      expect(service.revokeToken).toHaveBeenCalledWith('my-jwt-token');
+      expect(result).toEqual({ message: 'Logged out successfully' });
+    });
+
+    it('should handle missing authorization header gracefully', () => {
+      const req = { headers: {}, user: { userId: 1 } } as unknown as Request;
+      const result = controller.logout(req);
+      expect(service.revokeToken).not.toHaveBeenCalled();
+      expect(result).toEqual({ message: 'Logged out successfully' });
     });
   });
 });
