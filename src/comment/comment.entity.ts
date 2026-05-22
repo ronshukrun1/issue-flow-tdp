@@ -2,6 +2,7 @@ import {
   Entity,
   PrimaryGeneratedColumn,
   Column,
+  VersionColumn,
   CreateDateColumn,
   UpdateDateColumn,
   ManyToOne,
@@ -49,6 +50,10 @@ export class Comment {
   @ManyToMany(() => User)
   @JoinTable({ name: 'comment_mentions' })
   mentionedUsers!: User[];
+
+  /** Optimistic lock version — prevents simultaneous edits (TDP 2.5). */
+  @VersionColumn()
+  version!: number;
 
   @CreateDateColumn()
   createdAt!: Date;

@@ -3,6 +3,7 @@ import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { Request } from 'express';
 import { CommentController } from './comment.controller';
 import { CommentService } from './comment.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 import { Comment } from './comment.entity';
 import { User } from '../user/user.entity';
 import { Role } from '../user/role.enum';
@@ -30,6 +31,7 @@ const mockComment: Comment = {
   author: undefined as never,
   content: 'Hello @bob',
   mentionedUsers: [mockUser],
+  version: 1,
   createdAt: now,
   updatedAt: now,
 };
@@ -40,6 +42,7 @@ const mockRequest = (userId: number): Request =>
 describe('CommentController', () => {
   let controller: CommentController;
   let service: jest.Mocked<CommentService>;
+  let auditLogService: jest.Mocked<AuditLogService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -54,18 +57,21 @@ describe('CommentController', () => {
             remove: jest.fn(),
           },
         },
+        {
+          provide: AuditLogService,
+          useValue: { log: jest.fn().mockResolvedValue({}) },
+        },
       ],
     }).compile();
 
     controller = module.get<CommentController>(CommentController);
     service = module.get(CommentService);
+    auditLogService = module.get(AuditLogService);
   });
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
   });
-
-  // ---------- findByTicket ----------
 
   describe('findByTicket', () => {
     it('should return comments for a ticket', async () => {
@@ -73,80 +79,64 @@ describe('CommentController', () => {
       expect(await controller.findByTicket(1)).toEqual([mockComment]);
     });
 
-    it('should propagate NotFoundException for invalid ticket', async () => {
-      service.findByTicket.mockRejectedValue(
-        new NotFoundException('Ticket with ID 999 not found'),
-      );
-      await expect(controller.findByTicket(999)).rejects.toThrow(
-        NotFoundException,
-      );
+    it('should propagate NotFoundException', async () => {
+      service.findByTicket.mockRejectedValue(new NotFoundException());
+      await expect(controller.findByTicket(999)).rejects.toThrow(NotFoundException);
     });
   });
 
-  // ---------- create ----------
-
   describe('create', () => {
-    const dto: CreateCommentDto = {
-      content: 'Hello @bob',
-    };
+    const dto: CreateCommentDto = { content: 'Hello @bob' };
 
-    it('should extract userId from JWT and create a comment', async () => {
+    it('should extract userId from JWT, create comment, and log audit', async () => {
       service.create.mockResolvedValue(mockComment);
       const req = mockRequest(1);
 
       const result = await controller.create(1, dto, req);
       expect(result).toEqual(mockComment);
       expect(service.create).toHaveBeenCalledWith(1, 1, dto);
+      expect(auditLogService.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'CREATE', entityType: 'COMMENT' }),
+      );
     });
 
-    it('should propagate BadRequestException for invalid author', async () => {
-      service.create.mockRejectedValue(
-        new BadRequestException('Author with ID 999 does not exist'),
-      );
-      const req = mockRequest(999);
-
-      await expect(
-        controller.create(1, dto, req),
-      ).rejects.toThrow(BadRequestException);
+    it('should propagate BadRequestException', async () => {
+      service.create.mockRejectedValue(new BadRequestException());
+      await expect(controller.create(1, dto, mockRequest(999))).rejects.toThrow(BadRequestException);
     });
   });
-
-  // ---------- update ----------
 
   describe('update', () => {
     const dto: UpdateCommentDto = { content: 'Updated @alice' };
 
-    it('should update and return the modified comment', async () => {
+    it('should update the comment and log audit', async () => {
       const updated = { ...mockComment, content: 'Updated @alice' };
       service.update.mockResolvedValue(updated);
-      expect(await controller.update(1, 1, dto)).toEqual(updated);
+      const req = mockRequest(1);
+
+      const result = await controller.update(1, 1, dto, req);
+      expect(result).toEqual(updated);
+      expect(auditLogService.log).toHaveBeenCalled();
     });
 
     it('should propagate NotFoundException', async () => {
-      service.update.mockRejectedValue(
-        new NotFoundException('Comment with ID 999 not found for ticket 1'),
-      );
-      await expect(controller.update(1, 999, dto)).rejects.toThrow(
-        NotFoundException,
-      );
+      service.update.mockRejectedValue(new NotFoundException());
+      await expect(controller.update(1, 999, dto, mockRequest(1))).rejects.toThrow(NotFoundException);
     });
   });
 
-  // ---------- remove ----------
-
   describe('remove', () => {
-    it('should delete the comment', async () => {
+    it('should delete the comment and log audit', async () => {
       service.remove.mockResolvedValue(undefined);
-      await expect(controller.remove(1, 1)).resolves.toBeUndefined();
+      const req = mockRequest(1);
+
+      await expect(controller.remove(1, 1, req)).resolves.toBeUndefined();
+      expect(auditLogService.log).toHaveBeenCalled();
     });
 
     it('should propagate NotFoundException', async () => {
-      service.remove.mockRejectedValue(
-        new NotFoundException('Comment with ID 999 not found for ticket 1'),
-      );
-      await expect(controller.remove(1, 999)).rejects.toThrow(
-        NotFoundException,
-      );
+      service.remove.mockRejectedValue(new NotFoundException());
+      await expect(controller.remove(1, 999, mockRequest(1))).rejects.toThrow(NotFoundException);
     });
   });
 });

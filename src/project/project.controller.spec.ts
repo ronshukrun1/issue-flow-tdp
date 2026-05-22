@@ -1,10 +1,14 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
+import { Request } from 'express';
 import { ProjectController } from './project.controller';
 import { ProjectService } from './project.service';
+import { TicketService } from '../ticket/ticket.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 import { Project } from './project.entity';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
+import { Role } from '../user/role.enum';
 
 const now = new Date();
 
@@ -19,9 +23,14 @@ const mockProject: Project = {
   deletedAt: null,
 };
 
+const mockRequest = (userId: number): Request =>
+  ({ user: { userId, username: 'admin', role: Role.ADMIN } }) as unknown as Request;
+
 describe('ProjectController', () => {
   let controller: ProjectController;
   let service: jest.Mocked<ProjectService>;
+  let ticketService: jest.Mocked<TicketService>;
+  let auditLogService: jest.Mocked<AuditLogService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -39,18 +48,26 @@ describe('ProjectController', () => {
             restore: jest.fn(),
           },
         },
+        {
+          provide: TicketService,
+          useValue: { getProjectWorkload: jest.fn() },
+        },
+        {
+          provide: AuditLogService,
+          useValue: { log: jest.fn().mockResolvedValue({}) },
+        },
       ],
     }).compile();
 
     controller = module.get<ProjectController>(ProjectController);
     service = module.get(ProjectService);
+    ticketService = module.get(TicketService);
+    auditLogService = module.get(AuditLogService);
   });
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
   });
-
-  // ---------- findAll ----------
 
   describe('findAll', () => {
     it('should return all active projects', async () => {
@@ -58,8 +75,6 @@ describe('ProjectController', () => {
       expect(await controller.findAll()).toEqual([mockProject]);
     });
   });
-
-  // ---------- findDeleted ----------
 
   describe('findDeleted', () => {
     it('should return soft-deleted projects', async () => {
@@ -69,7 +84,16 @@ describe('ProjectController', () => {
     });
   });
 
-  // ---------- findOne ----------
+  describe('getWorkload', () => {
+    it('should delegate to ticketService.getProjectWorkload', async () => {
+      const workload = [{ userId: 1, username: 'jdoe', openTicketCount: 3 }];
+      ticketService.getProjectWorkload.mockResolvedValue(workload);
+
+      const result = await controller.getWorkload(1);
+      expect(result).toEqual(workload);
+      expect(ticketService.getProjectWorkload).toHaveBeenCalledWith(1);
+    });
+  });
 
   describe('findOne', () => {
     it('should return a project by ID', async () => {
@@ -78,14 +102,10 @@ describe('ProjectController', () => {
     });
 
     it('should propagate NotFoundException', async () => {
-      service.findOne.mockRejectedValue(
-        new NotFoundException('Project with ID 999 not found'),
-      );
+      service.findOne.mockRejectedValue(new NotFoundException());
       await expect(controller.findOne(999)).rejects.toThrow(NotFoundException);
     });
   });
-
-  // ---------- create ----------
 
   describe('create', () => {
     const dto: CreateProjectDto = {
@@ -94,74 +114,69 @@ describe('ProjectController', () => {
       ownerId: 1,
     };
 
-    it('should create and return the new project', async () => {
+    it('should create the project and log audit', async () => {
       service.create.mockResolvedValue(mockProject);
-      expect(await controller.create(dto)).toEqual(mockProject);
+      const req = mockRequest(10);
+
+      const result = await controller.create(dto, req);
+      expect(result).toEqual(mockProject);
+      expect(auditLogService.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'CREATE', entityType: 'PROJECT' }),
+      );
     });
 
     it('should propagate BadRequestException for invalid owner', async () => {
-      service.create.mockRejectedValue(
-        new BadRequestException('Owner with ID 999 does not exist'),
-      );
-      await expect(controller.create({ ...dto, ownerId: 999 })).rejects.toThrow(
-        BadRequestException,
-      );
+      service.create.mockRejectedValue(new BadRequestException());
+      await expect(controller.create({ ...dto, ownerId: 999 }, mockRequest(10))).rejects.toThrow(BadRequestException);
     });
   });
-
-  // ---------- update ----------
 
   describe('update', () => {
-    const dto: UpdateProjectDto = {
-      name: 'Updated Name',
-      description: 'Updated desc',
-    };
+    const dto: UpdateProjectDto = { name: 'Updated Name' };
 
-    it('should update and return the modified project', async () => {
-      const updated: Project = { ...mockProject, ...dto };
+    it('should update the project and log audit', async () => {
+      const updated = { ...mockProject, name: 'Updated Name' };
       service.update.mockResolvedValue(updated);
-      expect(await controller.update(1, dto)).toEqual(updated);
+      const req = mockRequest(10);
+
+      const result = await controller.update(1, dto, req);
+      expect(result).toEqual(updated);
+      expect(auditLogService.log).toHaveBeenCalled();
     });
 
     it('should propagate NotFoundException', async () => {
-      service.update.mockRejectedValue(
-        new NotFoundException('Project with ID 999 not found'),
-      );
-      await expect(controller.update(999, dto)).rejects.toThrow(
-        NotFoundException,
-      );
+      service.update.mockRejectedValue(new NotFoundException());
+      await expect(controller.update(999, dto, mockRequest(10))).rejects.toThrow(NotFoundException);
     });
   });
-
-  // ---------- remove (soft delete) ----------
 
   describe('remove', () => {
-    it('should soft-delete the project', async () => {
+    it('should soft-delete the project and log audit', async () => {
       service.softRemove.mockResolvedValue(undefined);
-      await expect(controller.remove(1)).resolves.toBeUndefined();
+      const req = mockRequest(10);
+
+      await expect(controller.remove(1, req)).resolves.toBeUndefined();
+      expect(auditLogService.log).toHaveBeenCalled();
     });
 
     it('should propagate NotFoundException', async () => {
-      service.softRemove.mockRejectedValue(
-        new NotFoundException('Project with ID 999 not found'),
-      );
-      await expect(controller.remove(999)).rejects.toThrow(NotFoundException);
+      service.softRemove.mockRejectedValue(new NotFoundException());
+      await expect(controller.remove(999, mockRequest(10))).rejects.toThrow(NotFoundException);
     });
   });
 
-  // ---------- restore ----------
-
   describe('restore', () => {
-    it('should restore a soft-deleted project', async () => {
+    it('should restore the project and log audit', async () => {
       service.restore.mockResolvedValue(undefined);
-      await expect(controller.restore(1)).resolves.toBeUndefined();
+      const req = mockRequest(10);
+
+      await expect(controller.restore(1, req)).resolves.toBeUndefined();
+      expect(auditLogService.log).toHaveBeenCalled();
     });
 
     it('should propagate NotFoundException', async () => {
-      service.restore.mockRejectedValue(
-        new NotFoundException('Soft-deleted project with ID 999 not found'),
-      );
-      await expect(controller.restore(999)).rejects.toThrow(NotFoundException);
+      service.restore.mockRejectedValue(new NotFoundException());
+      await expect(controller.restore(999, mockRequest(10))).rejects.toThrow(NotFoundException);
     });
   });
 });

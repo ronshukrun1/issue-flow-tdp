@@ -5,14 +5,21 @@ import {
   Delete,
   Param,
   Body,
+  Req,
   ParseIntPipe,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { ProjectService } from './project.service';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 import { Project } from './project.entity';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../user/role.enum';
+import { TicketService } from '../ticket/ticket.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
+import { AuditAction } from '../audit-log/enums/audit-action.enum';
 
 /**
  * Handles all HTTP requests for the `/projects` resource.
@@ -23,7 +30,12 @@ import { Role } from '../user/role.enum';
  */
 @Controller('projects')
 export class ProjectController {
-  constructor(private readonly projectService: ProjectService) {}
+  constructor(
+    private readonly projectService: ProjectService,
+    @Inject(forwardRef(() => TicketService))
+    private readonly ticketService: TicketService,
+    private readonly auditLogService: AuditLogService,
+  ) {}
 
   /**
    * `GET /projects` — returns all active (non-deleted) projects.
@@ -45,6 +57,17 @@ export class ProjectController {
   }
 
   /**
+   * `GET /projects/:projectId/workload` — returns workload data
+   * for all DEVELOPER users in the project.
+   */
+  @Get(':projectId/workload')
+  getWorkload(
+    @Param('projectId', ParseIntPipe) projectId: number,
+  ): Promise<{ userId: number; username: string; openTicketCount: number }[]> {
+    return this.ticketService.getProjectWorkload(projectId);
+  }
+
+  /**
    * `GET /projects/:projectId` — returns a single project by ID.
    *
    * @param projectId - Path parameter parsed as an integer.
@@ -58,35 +81,59 @@ export class ProjectController {
 
   /**
    * `POST /projects` — creates a new project.
-   *
-   * The request body is validated against {@link CreateProjectDto}.
    */
   @Post()
-  create(@Body() dto: CreateProjectDto): Promise<Project> {
-    return this.projectService.create(dto);
+  async create(
+    @Body() dto: CreateProjectDto,
+    @Req() req: Request,
+  ): Promise<Project> {
+    const project = await this.projectService.create(dto);
+    await this.auditLogService.log({
+      action: AuditAction.CREATE,
+      entityType: 'PROJECT',
+      entityId: project.id,
+      performedBy: (req.user as { userId: number }).userId,
+      actor: 'USER',
+    });
+    return project;
   }
 
   /**
    * `POST /projects/update/:projectId` — updates mutable fields of an existing project.
-   *
-   * The request body is validated against {@link UpdateProjectDto}.
    */
   @Post('update/:projectId')
-  update(
+  async update(
     @Param('projectId', ParseIntPipe) projectId: number,
     @Body() dto: UpdateProjectDto,
+    @Req() req: Request,
   ): Promise<Project> {
-    return this.projectService.update(projectId, dto);
+    const project = await this.projectService.update(projectId, dto);
+    await this.auditLogService.log({
+      action: AuditAction.UPDATE,
+      entityType: 'PROJECT',
+      entityId: projectId,
+      performedBy: (req.user as { userId: number }).userId,
+      actor: 'USER',
+    });
+    return project;
   }
 
   /**
    * `DELETE /projects/:projectId` — soft-deletes a project.
    */
   @Delete(':projectId')
-  remove(
+  async remove(
     @Param('projectId', ParseIntPipe) projectId: number,
+    @Req() req: Request,
   ): Promise<void> {
-    return this.projectService.softRemove(projectId);
+    await this.projectService.softRemove(projectId);
+    await this.auditLogService.log({
+      action: AuditAction.DELETE,
+      entityType: 'PROJECT',
+      entityId: projectId,
+      performedBy: (req.user as { userId: number }).userId,
+      actor: 'USER',
+    });
   }
 
   /**
@@ -96,9 +143,17 @@ export class ProjectController {
    */
   @Roles(Role.ADMIN)
   @Post(':projectId/restore')
-  restore(
+  async restore(
     @Param('projectId', ParseIntPipe) projectId: number,
+    @Req() req: Request,
   ): Promise<void> {
-    return this.projectService.restore(projectId);
+    await this.projectService.restore(projectId);
+    await this.auditLogService.log({
+      action: AuditAction.UPDATE,
+      entityType: 'PROJECT',
+      entityId: projectId,
+      performedBy: (req.user as { userId: number }).userId,
+      actor: 'USER',
+    });
   }
 }

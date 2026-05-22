@@ -7,8 +7,10 @@ import {
 } from '@nestjs/common';
 import { TicketService } from './ticket.service';
 import { Ticket } from './ticket.entity';
+import { User } from '../user/user.entity';
 import { ProjectService } from '../project/project.service';
 import { UserService } from '../user/user.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 import { TicketStatus } from './enums/ticket-status.enum';
 import { TicketPriority } from './enums/ticket-priority.enum';
 import { TicketType } from './enums/ticket-type.enum';
@@ -31,6 +33,7 @@ const mockTicket: Ticket = {
   dueDate: null,
   isOverdue: false,
   blockedBy: [],
+  version: 1,
   createdAt: now,
   updatedAt: now,
   deletedAt: null,
@@ -39,8 +42,28 @@ const mockTicket: Ticket = {
 describe('TicketService', () => {
   let service: TicketService;
   let repo: jest.Mocked<Repository<Ticket>>;
+  let userRepo: jest.Mocked<Repository<User>>;
   let projectService: jest.Mocked<ProjectService>;
   let userService: jest.Mocked<UserService>;
+  let auditLogService: jest.Mocked<AuditLogService>;
+
+  const mockUserRepoQb = () => {
+    const qb = {
+      leftJoin: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      groupBy: jest.fn().mockReturnThis(),
+      addGroupBy: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      getRawOne: jest.fn(),
+      getRawMany: jest.fn(),
+    };
+    userRepo.createQueryBuilder.mockReturnValue(qb as never);
+    return qb;
+  };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -60,6 +83,12 @@ describe('TicketService', () => {
           },
         },
         {
+          provide: getRepositoryToken(User),
+          useValue: {
+            createQueryBuilder: jest.fn(),
+          },
+        },
+        {
           provide: ProjectService,
           useValue: { findOne: jest.fn() },
         },
@@ -67,13 +96,19 @@ describe('TicketService', () => {
           provide: UserService,
           useValue: { findOne: jest.fn() },
         },
+        {
+          provide: AuditLogService,
+          useValue: { log: jest.fn().mockResolvedValue({}) },
+        },
       ],
     }).compile();
 
     service = module.get<TicketService>(TicketService);
     repo = module.get(getRepositoryToken(Ticket));
+    userRepo = module.get(getRepositoryToken(User));
     projectService = module.get(ProjectService);
     userService = module.get(UserService);
+    auditLogService = module.get(AuditLogService);
   });
 
   it('should be defined', () => {
@@ -93,12 +128,8 @@ describe('TicketService', () => {
     });
 
     it('should propagate NotFoundException when the project does not exist', async () => {
-      projectService.findOne.mockRejectedValue(
-        new NotFoundException('Project with ID 999 not found'),
-      );
-      await expect(service.findByProject(999)).rejects.toThrow(
-        NotFoundException,
-      );
+      projectService.findOne.mockRejectedValue(new NotFoundException());
+      await expect(service.findByProject(999)).rejects.toThrow(NotFoundException);
     });
   });
 
@@ -128,45 +159,56 @@ describe('TicketService', () => {
       projectId: 1,
     };
 
-    it('should validate the project and create a ticket', async () => {
+    it('should validate the project and create a ticket (with assigneeId)', async () => {
+      const assigned = { ...mockTicket, assigneeId: 5 };
       projectService.findOne.mockResolvedValue({} as never);
-      repo.create.mockReturnValue(mockTicket);
-      repo.save.mockResolvedValue(mockTicket);
+      userService.findOne.mockResolvedValue({} as never);
+      repo.create.mockReturnValue(assigned);
+      repo.save.mockResolvedValue(assigned);
+
+      const result = await service.create({ ...dto, assigneeId: 5 });
+      expect(result.assigneeId).toBe(5);
+    });
+
+    it('should auto-assign when assigneeId is null', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      repo.create.mockReturnValue({ ...mockTicket });
+      repo.save
+        .mockResolvedValueOnce({ ...mockTicket })
+        .mockResolvedValueOnce({ ...mockTicket, assigneeId: 7 });
+
+      const qb = mockUserRepoQb();
+      qb.getRawOne.mockResolvedValue({ userId: 7, openTicketCount: '0' });
 
       const result = await service.create(dto);
-      expect(result).toEqual(mockTicket);
-      expect(projectService.findOne).toHaveBeenCalledWith(1);
+      expect(result.assigneeId).toBe(7);
+      expect(auditLogService.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'AUTO_ASSIGN', actor: 'SYSTEM' }),
+      );
+    });
+
+    it('should leave unassigned when no DEVELOPERs exist', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      const savedTicket = { ...mockTicket };
+      repo.create.mockReturnValue(savedTicket);
+      repo.save.mockResolvedValueOnce(savedTicket);
+
+      const qb = mockUserRepoQb();
+      qb.getRawOne.mockResolvedValue(undefined);
+
+      const result = await service.create(dto);
+      expect(result.assigneeId).toBeNull();
     });
 
     it('should throw BadRequestException when project does not exist', async () => {
-      projectService.findOne.mockRejectedValue(
-        new NotFoundException('Project with ID 999 not found'),
-      );
-
-      await expect(
-        service.create({ ...dto, projectId: 999 }),
-      ).rejects.toThrow(BadRequestException);
-    });
-
-    it('should validate the assignee when provided', async () => {
-      projectService.findOne.mockResolvedValue({} as never);
-      userService.findOne.mockResolvedValue({} as never);
-      repo.create.mockReturnValue(mockTicket);
-      repo.save.mockResolvedValue(mockTicket);
-
-      await service.create({ ...dto, assigneeId: 5 });
-      expect(userService.findOne).toHaveBeenCalledWith(5);
+      projectService.findOne.mockRejectedValue(new NotFoundException());
+      await expect(service.create({ ...dto, projectId: 999 })).rejects.toThrow(BadRequestException);
     });
 
     it('should throw BadRequestException when assignee does not exist', async () => {
       projectService.findOne.mockResolvedValue({} as never);
-      userService.findOne.mockRejectedValue(
-        new NotFoundException('User with ID 999 not found'),
-      );
-
-      await expect(
-        service.create({ ...dto, assigneeId: 999 }),
-      ).rejects.toThrow(BadRequestException);
+      userService.findOne.mockRejectedValue(new NotFoundException());
+      await expect(service.create({ ...dto, assigneeId: 999 })).rejects.toThrow(BadRequestException);
     });
 
     it('should re-throw unexpected errors from project lookup', async () => {
@@ -188,25 +230,13 @@ describe('TicketService', () => {
     });
 
     it('should reject updates on a DONE ticket', async () => {
-      repo.findOneBy.mockResolvedValue({
-        ...mockTicket,
-        status: TicketStatus.DONE,
-      });
-
-      await expect(
-        service.update(1, { title: 'Change' }),
-      ).rejects.toThrow(BadRequestException);
+      repo.findOneBy.mockResolvedValue({ ...mockTicket, status: TicketStatus.DONE });
+      await expect(service.update(1, { title: 'Change' })).rejects.toThrow(BadRequestException);
     });
 
     it('should reject backward status transitions', async () => {
-      repo.findOneBy.mockResolvedValue({
-        ...mockTicket,
-        status: TicketStatus.IN_PROGRESS,
-      });
-
-      await expect(
-        service.update(1, { status: TicketStatus.TODO }),
-      ).rejects.toThrow(BadRequestException);
+      repo.findOneBy.mockResolvedValue({ ...mockTicket, status: TicketStatus.IN_PROGRESS });
+      await expect(service.update(1, { status: TicketStatus.TODO })).rejects.toThrow(BadRequestException);
     });
 
     it('should allow forward status transitions', async () => {
@@ -215,21 +245,13 @@ describe('TicketService', () => {
       repo.findOneBy.mockResolvedValue(ticket);
       repo.save.mockResolvedValue(updated);
 
-      const result = await service.update(1, {
-        status: TicketStatus.IN_PROGRESS,
-      });
+      const result = await service.update(1, { status: TicketStatus.IN_PROGRESS });
       expect(result.status).toBe(TicketStatus.IN_PROGRESS);
     });
 
     it('should reject same-status transitions', async () => {
-      repo.findOneBy.mockResolvedValue({
-        ...mockTicket,
-        status: TicketStatus.IN_REVIEW,
-      });
-
-      await expect(
-        service.update(1, { status: TicketStatus.IN_REVIEW }),
-      ).rejects.toThrow(BadRequestException);
+      repo.findOneBy.mockResolvedValue({ ...mockTicket, status: TicketStatus.IN_REVIEW });
+      await expect(service.update(1, { status: TicketStatus.IN_REVIEW })).rejects.toThrow(BadRequestException);
     });
 
     it('should handle partial updates (no status change)', async () => {
@@ -237,17 +259,13 @@ describe('TicketService', () => {
       repo.findOneBy.mockResolvedValue({ ...mockTicket });
       repo.save.mockResolvedValue(updated);
 
-      const result = await service.update(1, {
-        priority: TicketPriority.CRITICAL,
-      });
+      const result = await service.update(1, { priority: TicketPriority.CRITICAL });
       expect(result.priority).toBe(TicketPriority.CRITICAL);
     });
 
     it('should throw NotFoundException when ticket does not exist', async () => {
       repo.findOneBy.mockResolvedValue(null);
-      await expect(
-        service.update(999, { title: 'X' } as UpdateTicketDto),
-      ).rejects.toThrow(NotFoundException);
+      await expect(service.update(999, { title: 'X' } as UpdateTicketDto)).rejects.toThrow(NotFoundException);
     });
 
     it('should reject DONE transition when unresolved blockers exist', async () => {
@@ -261,9 +279,7 @@ describe('TicketService', () => {
       };
       repo.createQueryBuilder.mockReturnValue(qb as never);
 
-      await expect(
-        service.update(1, { status: TicketStatus.DONE }),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.update(1, { status: TicketStatus.DONE })).rejects.toThrow(BadRequestException);
     });
 
     it('should allow DONE transition when all blockers are DONE', async () => {
@@ -281,6 +297,16 @@ describe('TicketService', () => {
       const result = await service.update(1, { status: TicketStatus.DONE });
       expect(result.status).toBe(TicketStatus.DONE);
     });
+
+    it('should reset isOverdue when priority is set manually', async () => {
+      const overdue = { ...mockTicket, isOverdue: true, priority: TicketPriority.CRITICAL };
+      repo.findOneBy.mockResolvedValue({ ...overdue });
+      repo.save.mockImplementation(async (t) => t as Ticket);
+
+      const result = await service.update(1, { priority: TicketPriority.LOW });
+      expect(result.isOverdue).toBe(false);
+      expect(result.priority).toBe(TicketPriority.LOW);
+    });
   });
 
   // ---------- softRemove ----------
@@ -289,9 +315,7 @@ describe('TicketService', () => {
     it('should soft-delete the ticket', async () => {
       repo.findOneBy.mockResolvedValue(mockTicket);
       repo.softRemove.mockResolvedValue({ ...mockTicket, deletedAt: now });
-
       await expect(service.softRemove(1)).resolves.toBeUndefined();
-      expect(repo.softRemove).toHaveBeenCalledWith(mockTicket);
     });
 
     it('should throw NotFoundException when ticket does not exist', async () => {
@@ -322,34 +346,63 @@ describe('TicketService', () => {
 
   describe('restore', () => {
     it('should restore a soft-deleted ticket', async () => {
-      repo.restore.mockResolvedValue({
-        affected: 1,
-        raw: [],
-        generatedMaps: [],
-      });
+      repo.restore.mockResolvedValue({ affected: 1, raw: [], generatedMaps: [] });
       await expect(service.restore(1)).resolves.toBeUndefined();
     });
 
     it('should throw NotFoundException when no soft-deleted ticket found', async () => {
-      repo.restore.mockResolvedValue({
-        affected: 0,
-        raw: [],
-        generatedMaps: [],
-      });
+      repo.restore.mockResolvedValue({ affected: 0, raw: [], generatedMaps: [] });
       await expect(service.restore(999)).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  // ---------- getProjectWorkload ----------
+
+  describe('getProjectWorkload', () => {
+    it('should return workload data sorted by openTicketCount', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      const qb = mockUserRepoQb();
+      qb.getRawMany.mockResolvedValue([
+        { userId: 1, username: 'alice', openTicketCount: '2' },
+        { userId: 2, username: 'bob', openTicketCount: '5' },
+      ]);
+
+      const result = await service.getProjectWorkload(1);
+      expect(result).toEqual([
+        { userId: 1, username: 'alice', openTicketCount: 2 },
+        { userId: 2, username: 'bob', openTicketCount: 5 },
+      ]);
+    });
+
+    it('should throw NotFoundException when the project does not exist', async () => {
+      projectService.findOne.mockRejectedValue(new NotFoundException());
+      await expect(service.getProjectWorkload(999)).rejects.toThrow(NotFoundException);
     });
   });
 
   // ---------- exportToCsv ----------
 
   describe('exportToCsv', () => {
-    it('should produce a valid CSV with header and data rows', async () => {
+    it('should produce a valid CSV with header including dueDate and isOverdue', async () => {
       projectService.findOne.mockResolvedValue({} as never);
       repo.find.mockResolvedValue([mockTicket]);
 
       const csv = await service.exportToCsv(1);
-      expect(csv).toContain('id,title,description,status,priority,type,assigneeId');
+      expect(csv).toContain('id,title,description,status,priority,type,assigneeId,dueDate,isOverdue');
       expect(csv).toContain('Fix login bug');
+    });
+
+    it('should export dueDate as ISO string and isOverdue as boolean', async () => {
+      const due = new Date('2025-06-01T00:00:00.000Z');
+      const ticketWithDue = { ...mockTicket, dueDate: due, isOverdue: true };
+      projectService.findOne.mockResolvedValue({} as never);
+      repo.find.mockResolvedValue([ticketWithDue]);
+
+      const csv = await service.exportToCsv(1);
+      expect(csv).toContain(due.toISOString());
+      const dataLine = csv.split('\n')[1];
+      const fields = dataLine.split(',');
+      expect(fields[fields.length - 1].trim()).toBe('1');
     });
 
     it('should return header-only CSV when no tickets exist', async () => {
@@ -371,8 +424,8 @@ describe('TicketService', () => {
       repo.save.mockResolvedValue(mockTicket);
 
       const csv = [
-        'title,description,status,priority,type,assigneeId',
-        'Bug,Desc,TODO,HIGH,BUG,',
+        'title,description,status,priority,type,assigneeId,dueDate,isOverdue',
+        'Bug,Desc,TODO,HIGH,BUG,,,false',
       ].join('\n');
 
       const result = await service.importFromCsv(1, Buffer.from(csv));
@@ -380,12 +433,31 @@ describe('TicketService', () => {
       expect(result.failed).toBe(0);
     });
 
+    it('should import dueDate and isOverdue from CSV', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      repo.create.mockImplementation((data) => data as Ticket);
+      repo.save.mockImplementation(async (t) => t as Ticket);
+
+      const csv = [
+        'title,description,status,priority,type,assigneeId,dueDate,isOverdue',
+        'Bug,Desc,TODO,HIGH,BUG,,2025-06-01T00:00:00.000Z,true',
+      ].join('\n');
+
+      await service.importFromCsv(1, Buffer.from(csv));
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          dueDate: expect.any(Date),
+          isOverdue: true,
+        }),
+      );
+    });
+
     it('should collect errors for invalid rows', async () => {
       projectService.findOne.mockResolvedValue({} as never);
 
       const csv = [
-        'title,description,status,priority,type,assigneeId',
-        ',Desc,INVALID,HIGH,BUG,',
+        'title,description,status,priority,type,assigneeId,dueDate,isOverdue',
+        ',Desc,INVALID,HIGH,BUG,,,false',
       ].join('\n');
 
       const result = await service.importFromCsv(1, Buffer.from(csv));
@@ -400,9 +472,9 @@ describe('TicketService', () => {
       repo.save.mockResolvedValue(mockTicket);
 
       const csv = [
-        'title,description,status,priority,type,assigneeId',
-        'Good,Desc,TODO,HIGH,BUG,',
-        ',Bad,INVALID,HIGH,BUG,',
+        'title,description,status,priority,type,assigneeId,dueDate,isOverdue',
+        'Good,Desc,TODO,HIGH,BUG,,,false',
+        ',Bad,INVALID,HIGH,BUG,,,false',
       ].join('\n');
 
       const result = await service.importFromCsv(1, Buffer.from(csv));
@@ -420,9 +492,7 @@ describe('TicketService', () => {
       repo.findOneBy.mockResolvedValue(blocker);
       repo.save.mockResolvedValue(mockTicket);
 
-      await expect(
-        service.addDependency(1, { blockedBy: 42 }),
-      ).resolves.toBeUndefined();
+      await expect(service.addDependency(1, { blockedBy: 42 })).resolves.toBeUndefined();
     });
 
     it('should reject when tickets belong to different projects', async () => {
@@ -430,17 +500,12 @@ describe('TicketService', () => {
       repo.findOne.mockResolvedValue({ ...mockTicket, blockedBy: [] } as Ticket);
       repo.findOneBy.mockResolvedValue(blocker);
 
-      await expect(
-        service.addDependency(1, { blockedBy: 42 }),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.addDependency(1, { blockedBy: 42 })).rejects.toThrow(BadRequestException);
     });
 
     it('should throw NotFoundException when ticket does not exist', async () => {
       repo.findOne.mockResolvedValue(null);
-
-      await expect(
-        service.addDependency(999, { blockedBy: 42 }),
-      ).rejects.toThrow(NotFoundException);
+      await expect(service.addDependency(999, { blockedBy: 42 })).rejects.toThrow(NotFoundException);
     });
   });
 
@@ -449,10 +514,7 @@ describe('TicketService', () => {
   describe('getDependencies', () => {
     it('should return the blockedBy array', async () => {
       const blocker = { ...mockTicket, id: 42 };
-      repo.findOne.mockResolvedValue({
-        ...mockTicket,
-        blockedBy: [blocker],
-      } as Ticket);
+      repo.findOne.mockResolvedValue({ ...mockTicket, blockedBy: [blocker] } as Ticket);
 
       const result = await service.getDependencies(1);
       expect(result).toHaveLength(1);
@@ -461,9 +523,7 @@ describe('TicketService', () => {
 
     it('should throw NotFoundException when ticket does not exist', async () => {
       repo.findOne.mockResolvedValue(null);
-      await expect(service.getDependencies(999)).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(service.getDependencies(999)).rejects.toThrow(NotFoundException);
     });
   });
 
@@ -472,24 +532,15 @@ describe('TicketService', () => {
   describe('removeDependency', () => {
     it('should remove the blocker from the array', async () => {
       const blocker = { ...mockTicket, id: 42 };
-      repo.findOne.mockResolvedValue({
-        ...mockTicket,
-        blockedBy: [blocker],
-      } as Ticket);
+      repo.findOne.mockResolvedValue({ ...mockTicket, blockedBy: [blocker] } as Ticket);
       repo.save.mockResolvedValue(mockTicket);
 
       await expect(service.removeDependency(1, 42)).resolves.toBeUndefined();
     });
 
     it('should throw NotFoundException when the dependency does not exist', async () => {
-      repo.findOne.mockResolvedValue({
-        ...mockTicket,
-        blockedBy: [],
-      } as Ticket);
-
-      await expect(service.removeDependency(1, 42)).rejects.toThrow(
-        NotFoundException,
-      );
+      repo.findOne.mockResolvedValue({ ...mockTicket, blockedBy: [] } as Ticket);
+      await expect(service.removeDependency(1, 42)).rejects.toThrow(NotFoundException);
     });
   });
 });

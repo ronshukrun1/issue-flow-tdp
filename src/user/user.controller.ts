@@ -6,9 +6,11 @@ import {
   Param,
   Body,
   Query,
+  Req,
   ParseIntPipe,
   DefaultValuePipe,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -17,6 +19,8 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from './role.enum';
 import { CommentService } from '../comment/comment.service';
 import { Comment } from '../comment/comment.entity';
+import { AuditLogService } from '../audit-log/audit-log.service';
+import { AuditAction } from '../audit-log/enums/audit-action.enum';
 
 /**
  * Handles all HTTP requests for the `/users` resource.
@@ -30,6 +34,7 @@ export class UserController {
   constructor(
     private readonly userService: UserService,
     private readonly commentService: CommentService,
+    private readonly auditLogService: AuditLogService,
   ) {}
 
   /**
@@ -42,8 +47,6 @@ export class UserController {
 
   /**
    * `GET /users/:userId` — returns a single user by ID.
-   *
-   * @param userId - Path parameter parsed as an integer.
    */
   @Get(':userId')
   findOne(@Param('userId', ParseIntPipe) userId: number): Promise<User> {
@@ -53,10 +56,6 @@ export class UserController {
   /**
    * `GET /users/:userId/mentions` — returns a paginated list of comments
    * where the user was `@mentioned`.
-   *
-   * @param userId   - Path parameter parsed as an integer.
-   * @param page     - Optional 1-based page number (defaults to 1).
-   * @param pageSize - Optional page size (defaults to 10).
    */
   @Get(':userId/mentions')
   findMentions(
@@ -71,29 +70,45 @@ export class UserController {
    * `POST /users` — creates (registers) a new user.
    *
    * Restricted to ADMIN users to prevent anonymous privilege escalation.
-   *
-   * The request body is validated against {@link CreateUserDto}.
    */
   @Roles(Role.ADMIN)
   @Post()
-  create(@Body() dto: CreateUserDto): Promise<User> {
-    return this.userService.create(dto);
+  async create(
+    @Body() dto: CreateUserDto,
+    @Req() req: Request,
+  ): Promise<User> {
+    const user = await this.userService.create(dto);
+    await this.auditLogService.log({
+      action: AuditAction.CREATE,
+      entityType: 'USER',
+      entityId: user.id,
+      performedBy: (req.user as { userId: number }).userId,
+      actor: 'USER',
+    });
+    return user;
   }
 
   /**
    * `POST /users/update/:userId` — updates mutable fields of an existing user.
    *
    * Restricted to ADMIN users.
-   *
-   * The request body is validated against {@link UpdateUserDto}.
    */
   @Roles(Role.ADMIN)
   @Post('update/:userId')
-  update(
+  async update(
     @Param('userId', ParseIntPipe) userId: number,
     @Body() dto: UpdateUserDto,
+    @Req() req: Request,
   ): Promise<User> {
-    return this.userService.update(userId, dto);
+    const user = await this.userService.update(userId, dto);
+    await this.auditLogService.log({
+      action: AuditAction.UPDATE,
+      entityType: 'USER',
+      entityId: userId,
+      performedBy: (req.user as { userId: number }).userId,
+      actor: 'USER',
+    });
+    return user;
   }
 
   /**
@@ -103,7 +118,17 @@ export class UserController {
    */
   @Roles(Role.ADMIN)
   @Delete(':userId')
-  remove(@Param('userId', ParseIntPipe) userId: number): Promise<void> {
-    return this.userService.remove(userId);
+  async remove(
+    @Param('userId', ParseIntPipe) userId: number,
+    @Req() req: Request,
+  ): Promise<void> {
+    await this.userService.remove(userId);
+    await this.auditLogService.log({
+      action: AuditAction.DELETE,
+      entityType: 'USER',
+      entityId: userId,
+      performedBy: (req.user as { userId: number }).userId,
+      actor: 'USER',
+    });
   }
 }

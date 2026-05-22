@@ -35,6 +35,7 @@ const mockComment: Comment = {
   author: undefined as never,
   content: 'Hello @bob',
   mentionedUsers: [mockUser],
+  version: 1,
   createdAt: now,
   updatedAt: now,
 };

@@ -2,6 +2,7 @@ import {
   Entity,
   PrimaryGeneratedColumn,
   Column,
+  VersionColumn,
   CreateDateColumn,
   UpdateDateColumn,
   DeleteDateColumn,
@@ -75,6 +76,10 @@ export class Ticket {
     inverseJoinColumn: { name: 'blockedById', referencedColumnName: 'id' },
   })
   blockedBy!: Ticket[];
+
+  /** Optimistic lock version — prevents simultaneous edits (TDP 2.4). */
+  @VersionColumn()
+  version!: number;
 
   @CreateDateColumn()
   createdAt!: Date;

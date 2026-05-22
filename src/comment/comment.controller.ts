@@ -14,17 +14,23 @@ import { CommentService } from './comment.service';
 import { CreateCommentDto } from './dto/create-comment.dto';
 import { UpdateCommentDto } from './dto/update-comment.dto';
 import { Comment } from './comment.entity';
+import { AuditLogService } from '../audit-log/audit-log.service';
+import { AuditAction } from '../audit-log/enums/audit-action.enum';
 
 /**
  * Handles HTTP requests for comments nested under `/tickets/:ticketId/comments`.
  *
  * The authenticated user's ID is extracted from the JWT payload
  * (`req.user.userId`) rather than accepted from the request body,
- * preventing author spoofing.
+ * preventing author spoofing. State-changing actions are recorded
+ * in the audit log.
  */
 @Controller('tickets/:ticketId/comments')
 export class CommentController {
-  constructor(private readonly commentService: CommentService) {}
+  constructor(
+    private readonly commentService: CommentService,
+    private readonly auditLogService: AuditLogService,
+  ) {}
 
   /**
    * `GET /tickets/:ticketId/comments` — returns all comments for a ticket,
@@ -42,13 +48,21 @@ export class CommentController {
    * `@username` mentions. The author is the authenticated user.
    */
   @Post()
-  create(
+  async create(
     @Param('ticketId', ParseIntPipe) ticketId: number,
     @Body() dto: CreateCommentDto,
     @Req() req: Request,
   ): Promise<Comment> {
     const userId = (req.user as { userId: number }).userId;
-    return this.commentService.create(ticketId, userId, dto);
+    const comment = await this.commentService.create(ticketId, userId, dto);
+    await this.auditLogService.log({
+      action: AuditAction.CREATE,
+      entityType: 'COMMENT',
+      entityId: comment.id,
+      performedBy: userId,
+      actor: 'USER',
+    });
+    return comment;
   }
 
   /**
@@ -56,12 +70,21 @@ export class CommentController {
    * content and re-evaluates its mentions.
    */
   @Patch(':commentId')
-  update(
+  async update(
     @Param('ticketId', ParseIntPipe) ticketId: number,
     @Param('commentId', ParseIntPipe) commentId: number,
     @Body() dto: UpdateCommentDto,
+    @Req() req: Request,
   ): Promise<Comment> {
-    return this.commentService.update(ticketId, commentId, dto);
+    const comment = await this.commentService.update(ticketId, commentId, dto);
+    await this.auditLogService.log({
+      action: AuditAction.UPDATE,
+      entityType: 'COMMENT',
+      entityId: commentId,
+      performedBy: (req.user as { userId: number }).userId,
+      actor: 'USER',
+    });
+    return comment;
   }
 
   /**
@@ -69,10 +92,18 @@ export class CommentController {
    * a comment.
    */
   @Delete(':commentId')
-  remove(
+  async remove(
     @Param('ticketId', ParseIntPipe) ticketId: number,
     @Param('commentId', ParseIntPipe) commentId: number,
+    @Req() req: Request,
   ): Promise<void> {
-    return this.commentService.remove(ticketId, commentId);
+    await this.commentService.remove(ticketId, commentId);
+    await this.auditLogService.log({
+      action: AuditAction.DELETE,
+      entityType: 'COMMENT',
+      entityId: commentId,
+      performedBy: (req.user as { userId: number }).userId,
+      actor: 'USER',
+    });
   }
 }

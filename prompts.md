@@ -959,3 +959,309 @@ All 14 test suites updated and passing with 170 tests:
 
 - **TypeScript strict compilation**: 0 errors
 - **Unit tests**: 14 suites, 170 tests — all passing
+
+---
+
+## Phase 4 — Auto-Assignment, Auto-Escalation, and Audit Logs
+
+### Prompt
+
+Implement Phase 4 features: Auto-Assignment (TDP 3.8), Auto-Escalation (TDP 3.7), Audit Logs (TDP 3.1), and a Workload API endpoint. This involved creating new modules, modifying existing services and controllers, and integrating audit logging across all state-changing operations.
+
+### AI Model
+
+Claude Opus 4.6
+
+### Implementation Summary
+
+#### 1. Audit Log Module (`src/audit-log/`)
+
+**New files created:**
+
+- `src/audit-log/enums/audit-action.enum.ts` — Enum: `CREATE`, `UPDATE`, `DELETE`, `AUTO_ASSIGN`, `AUTO_ESCALATE`
+- `src/audit-log/audit-log.entity.ts` — Entity with fields: `id`, `action` (AuditAction enum), `entityType` (string), `entityId` (number), `performedBy` (nullable FK → User, `onDelete: 'SET NULL'`), `actor` (string: `'USER'` or `'SYSTEM'`), `timestamp` (@CreateDateColumn)
+- `src/audit-log/audit-log.service.ts` — `log()` method for persisting entries; `findAll()` with optional query filters (`entityType`, `entityId`, `action`, `actor`) using QueryBuilder
+- `src/audit-log/audit-log.controller.ts` — `GET /audit-logs` with optional `@Query` filter parameters
+- `src/audit-log/audit-log.module.ts` — `@Global()` module so all feature modules can inject `AuditLogService` without explicit imports
+
+#### 2. Priority Helpers (`src/ticket/enums/ticket-priority.enum.ts`)
+
+Added `PRIORITY_ORDER` (numeric mapping), `PRIORITY_LEVELS` (ordered array), and `nextPriority()` function to support stepwise escalation logic.
+
+#### 3. Auto-Escalation Scheduler (`src/escalation/`)
+
+**New files created:**
+
+- `src/escalation/escalation.scheduler.ts` — Cron job (`@Cron(CronExpression.EVERY_MINUTE)`) implementing TDP 3.7 stepwise logic:
+  - Queries active tickets where `status !== DONE`, `dueDate < NOW()`
+  - Promotes priority one level: `LOW → MEDIUM → HIGH → CRITICAL`
+  - Sets `isOverdue = true` only when ticket reaches or is at `CRITICAL`
+  - Idempotent: skips tickets already at `CRITICAL` with `isOverdue = true`
+  - Logs each escalation as `AuditAction.AUTO_ESCALATE` with `actor: 'SYSTEM'`
+- `src/escalation/escalation.module.ts` — Imports `TypeOrmModule.forFeature([Ticket])`
+
+**Dependency installed:** `@nestjs/schedule`
+
+#### 4. Auto-Assignment (TDP 3.8) in `TicketService.create()`
+
+- When a ticket is created without an `assigneeId`, the auto-assignment engine activates
+- Uses a `createQueryBuilder` query on the User repository: finds all DEVELOPER users, LEFT JOINs their open tickets (non-DONE, non-deleted) in the same project, groups by user, orders by `openTicketCount ASC, createdAt ASC` (registration-order tiebreak)
+- Assigns the least-loaded developer; logs `AuditAction.AUTO_ASSIGN` with `actor: 'SYSTEM'`
+- If no DEVELOPERs exist, leaves the ticket unassigned (no error)
+- **Trigger**: Only on ticket creation (not update), per TDP spec clarification
+
+#### 5. `isOverdue` Reset on Manual Priority Change
+
+In `TicketService.update()`, when `dto.priority` is explicitly set, `isOverdue` is reset to `false` (TDP 3.7: manual priority change resets escalation state).
+
+#### 6. Workload API Endpoint
+
+- `GET /projects/:projectId/workload` — Added to `ProjectController`, delegating to `TicketService.getProjectWorkload()`
+- Returns `{ userId, username, openTicketCount }[]` for all DEVELOPER users, sorted by workload ascending
+- `ProjectModule` updated with `forwardRef(() => TicketModule)` to resolve circular dependency
+
+#### 7. Audit Log Integration Across Controllers
+
+Injected `AuditLogService` and `@Req() req: Request` into all state-changing controller methods:
+
+- **UserController**: `create`, `update`, `remove`
+- **ProjectController**: `create`, `update`, `remove`, `restore`
+- **TicketController**: `create`, `update`, `remove`, `restore`, `addDependency`, `removeDependency`
+- **CommentController**: `create`, `update`, `remove`
+
+Each logs `performedBy: req.user.userId` with `actor: 'USER'`.
+
+#### 8. Module Wiring (`app.module.ts`)
+
+- Imported `ScheduleModule.forRoot()` from `@nestjs/schedule`
+- Imported `AuditLogModule` (global)
+- Imported `EscalationModule`
+
+### Files Changed
+
+**New files (10):**
+- `src/audit-log/enums/audit-action.enum.ts`
+- `src/audit-log/audit-log.entity.ts`
+- `src/audit-log/audit-log.service.ts`
+- `src/audit-log/audit-log.service.spec.ts`
+- `src/audit-log/audit-log.controller.ts`
+- `src/audit-log/audit-log.controller.spec.ts`
+- `src/audit-log/audit-log.module.ts`
+- `src/escalation/escalation.scheduler.ts`
+- `src/escalation/escalation.scheduler.spec.ts`
+- `src/escalation/escalation.module.ts`
+
+**Modified files (13):**
+- `package.json` — Added `@nestjs/schedule`
+- `src/app.module.ts` — Imported ScheduleModule, AuditLogModule, EscalationModule
+- `src/ticket/enums/ticket-priority.enum.ts` — Added PRIORITY_ORDER, nextPriority helper
+- `src/ticket/ticket.service.ts` — Auto-assignment, isOverdue reset, workload query, AuditLogService injection
+- `src/ticket/ticket.service.spec.ts` — Tests for auto-assignment, isOverdue reset, workload
+- `src/ticket/ticket.module.ts` — Added User entity to TypeOrmModule.forFeature
+- `src/ticket/ticket.controller.ts` — Audit logging in state-changing methods
+- `src/ticket/ticket.controller.spec.ts` — Updated for AuditLogService and Request parameter
+- `src/user/user.controller.ts` — Audit logging in state-changing methods
+- `src/user/user.controller.spec.ts` — Updated for AuditLogService and Request parameter
+- `src/project/project.controller.ts` — Audit logging, workload endpoint
+- `src/project/project.controller.spec.ts` — Updated for AuditLogService, TicketService, and Request parameter
+- `src/project/project.module.ts` — Added forwardRef(() => TicketModule)
+- `src/comment/comment.controller.ts` — Audit logging in state-changing methods
+- `src/comment/comment.controller.spec.ts` — Updated for AuditLogService and Request parameter
+- `prompts.md` — This summary
+
+### Verification
+
+- **TypeScript strict compilation**: 0 errors
+- **Unit tests**: 17 suites, 193 tests — all passing
+
+---
+
+## Phase 4 — Code Review & Quality Assurance
+
+### Model
+
+**Claude Opus 4.6** (Anthropic) — used via Cursor IDE agent mode.
+
+### Prompt
+
+> You are a Senior Software Architect and Database Performance Expert performing a rigorous Code Review on Phase 4 (Auto-Escalation, Auto-Assignment, and Audit Logs) of the IssueFlow platform.
+>
+> Please review all generated and modified files under `src/audit-log/` and the automation schedulers/logic. Analyze the implementation against production-grade NestJS and TypeORM architecture patterns, and provide feedback on:
+>
+> 1. Scheduler Performance & Concurrency: Does the Cron job query for overdue tickets efficiently? Does it update tickets in bulk or via an optimized transaction, or is it executing individual `save()` operations in a loop? Is the date comparison safely timezone-aware?
+> 2. Workload & Auto-Assignment Query Efficiency: Is it utilizing an aggregate SQL query (e.g., `COUNT` with a `GROUP BY`) via TypeORM's QueryBuilder, or is it loading all developers and all their tickets into memory to count them in JavaScript?
+> 3. Audit Logging Integrity: Is the `AuditLog` creation safely decoupled from the main HTTP response? Does it correctly identify the `actor` as 'SYSTEM' during background escalation?
+> 4. Documentation & Log Tracking: Verify that this prompt and analysis are appended to `prompts.md`.
+>
+> Highlight any critical issues that must be fixed before the final merge to main.
+
+### Review Analysis
+
+#### 1. Scheduler Performance & Concurrency
+
+**Strengths:**
+- The escalation scheduler uses `@Cron(CronExpression.EVERY_MINUTE)` via `@nestjs/schedule` — proper NestJS integration.
+- The query uses TypeORM `find()` with `Not(TicketStatus.DONE)` and `LessThan(now)` — correct operators.
+- Idempotent behavior: `CRITICAL` tickets with `isOverdue = true` are skipped, preventing infinite re-escalation.
+- `nextPriority()` helper in `ticket-priority.enum.ts` is a clean, testable pure function.
+- The scheduler uses NestJS `Logger` for observability.
+
+**Issues found:**
+- **[CRITICAL] Individual `save()` calls inside a loop — severe performance bottleneck at scale.** In `escalation.scheduler.ts:46-76`, each overdue ticket gets its own `await this.ticketRepository.save(ticket)` plus a separate `await this.auditLogService.log(...)`. If there are 1000 overdue tickets, this is 2000 sequential DB round trips. **Fix:** Collect changed tickets into a batch and use `this.ticketRepository.save(changedTickets)` for a single bulk UPDATE, then batch-insert audit logs.
+- **[CRITICAL] No concurrency guard.** If a cron run takes longer than 60 seconds (the cron interval), a second invocation starts while the first is still running. Both will query the same overdue tickets and process them concurrently, causing duplicate escalations and duplicate audit log entries. **Fix:** Add an `isRunning` boolean flag with try/finally, or use a database-level advisory lock.
+- **[IMPORTANT] Timezone safety is correct but undocumented.** The comparison `dueDate: LessThan(now)` where `now = new Date()` is safe because `dueDate` is stored as `timestamptz` and PostgreSQL handles UTC conversion internally. Worth annotating explicitly.
+- **[IMPORTANT] Audit log failure crashes the escalation for remaining tickets.** If `auditLogService.log()` throws for ticket N, the loop aborts and tickets N+1 through the end are never escalated. The ticket save already succeeded, leaving an inconsistent state. **Fix:** Wrap the audit log call in a try/catch with a `logger.error()` fallback.
+
+#### 2. Workload & Auto-Assignment Query Efficiency
+
+**Strengths:**
+- The auto-assignment query in `ticket.service.ts:259-275` is a **single aggregate SQL query** using `LEFT JOIN` + `COUNT` + `GROUP BY` + `ORDER BY` + `LIMIT 1`. This is the optimal approach — no N+1, no in-memory counting.
+- The query correctly filters for open tickets only (`ticket.status != :done AND ticket."deletedAt" IS NULL`), preventing completed or deleted tickets from inflating the count.
+- Tie-breaking uses `user."createdAt" ASC` — oldest developer gets assigned first, which is deterministic and fair.
+- The workload API endpoint at `project.controller.ts:63-68` reuses the same query pattern for transparency.
+- `getRawOne` returns `undefined` when no developers exist, and the code correctly returns `null` — no crash.
+
+**Issues found:**
+- **[IMPORTANT] Auto-assignment selects from ALL developers globally, not project-scoped.** The query selects the least-loaded `DEVELOPER` across all projects. A developer who has never touched a project could be auto-assigned to it. Whether this is desired depends on business requirements — if project membership is intended, an additional join would be needed.
+- **[MINOR] `openTicketCount` comes back as a string from `getRawMany`/`getRawOne`.** The code correctly coerces it to `Number()` in `getProjectWorkload`, and in `autoAssign` the field is unused beyond the query.
+
+#### 3. Audit Logging Integrity
+
+**Strengths:**
+- `AuditLogModule` is correctly marked `@Global()` — every module can inject `AuditLogService` without explicit imports.
+- The entity uses `@CreateDateColumn()` for `timestamp` — immutable, server-set timestamps.
+- `performedBy` is nullable with `onDelete: 'SET NULL'` — if a user is deleted, their audit trail is preserved.
+- System-triggered actions (escalation, auto-assignment) correctly set `actor: 'SYSTEM'` and `performedBy: null` — verified in both `escalation.scheduler.ts:66-69` and `ticket.service.ts:282-288`.
+- The `findAll` query builder uses dynamic `andWhere` for optional filters and orders by `timestamp DESC`.
+
+**Issues found:**
+- **[CRITICAL] Audit log failures crash user-facing requests.** In `ticket.controller.ts:124-131`, the pattern is: create the ticket, then `await this.auditLogService.log(...)`. The ticket is already committed. If the audit log write fails (DB hiccup, constraint error), the HTTP response returns 500 even though the business action succeeded. The client may retry, creating a duplicate. **This pattern is repeated in every state-changing controller method across tickets, projects, and comments.** **Fix options:** (1) Wrap in try/catch that logs the error but still returns success. (2) Use fire-and-forget: `this.auditLogService.log(...).catch(err => this.logger.error(err))`. (3) Use an event-driven approach with async listeners.
+- **[IMPORTANT] `GET /audit-logs` has no pagination.** The `findAll` method returns every matching log entry. In production with thousands of daily mutations, this returns massive payloads. **Fix:** Add `page`/`pageSize` query parameters with defaults.
+- **[IMPORTANT] `GET /audit-logs` has no RBAC restriction.** Any authenticated user can read the entire audit trail, including actions by other users and system escalations. Should be restricted to `@Roles(Role.ADMIN)`.
+- **[MINOR] `entityId` parameter in the controller is parsed with `Number()` but not validated.** `Number('abc')` returns `NaN`, which passes the `!== undefined` check and results in `WHERE entityId = NaN`. Should use `ParseIntPipe` or validate.
+
+#### 4. Test Quality Summary
+
+**Escalation scheduler (8 tests):** Covers all priority transitions (LOW→MEDIUM, MEDIUM→HIGH, HIGH→CRITICAL with isOverdue), CRITICAL-already-overdue skip, empty result set, and multiple-ticket processing. Tests verify both `repo.save` and `auditLogService.log` calls including `actor: 'SYSTEM'`.
+
+**Audit log service (6 tests):** Covers log creation, system action with null performedBy, filter-less retrieval, individual filters, and multi-filter combination.
+
+**Audit log controller (3 tests):** Covers no-filter delegation, full-filter delegation, and partial-filter delegation.
+
+**Ticket service auto-assignment (3 tests in create block):** Covers auto-assign when assigneeId is null (verifies userId and audit log), no-DEVELOPER fallback (remains unassigned), and explicit assignee bypass.
+
+**Gaps:**
+- No test for concurrent cron execution (race condition).
+- No test for audit log failure during escalation (error propagation behavior).
+- No test for audit log failure during controller request (crash vs graceful degradation).
+- No test for `getProjectWorkload` with zero developers.
+- No test for `entityId=NaN` in audit log controller.
+- No integration test verifying the `@Cron` decorator actually triggers on schedule.
+
+### Remediation Plan for Final Merge Readiness
+
+#### Critical fixes (must complete before final merge):
+
+| # | Issue | Fix |
+|---|-------|-----|
+| C1 | Escalation loop does individual `save()` + `log()` per ticket | Collect changed tickets into a batch; use `ticketRepository.save(batch)` and `auditLogRepository.save(auditEntries)` for bulk operations |
+| C2 | No concurrency guard on cron job | Add an `isRunning` boolean flag with try/finally guard, or use a database advisory lock |
+| C3 | Audit log failure crashes user-facing requests | Wrap `auditLogService.log()` calls in controllers with try/catch or use fire-and-forget `.catch(err => logger.error(err))` pattern |
+
+#### Important fixes (recommended before final merge):
+
+| # | Issue | Fix |
+|---|-------|-----|
+| I1 | Audit log failure in scheduler aborts remaining tickets | Wrap `auditLogService.log()` in try/catch inside the escalation loop with `logger.error()` fallback |
+| I2 | `GET /audit-logs` has no pagination | Add `@Query('page')` and `@Query('pageSize')` parameters with defaults; use `.skip()` and `.take()` on the query builder |
+| I3 | `GET /audit-logs` has no RBAC restriction | Add `@Roles(Role.ADMIN)` decorator to the controller or endpoint |
+| I4 | `entityId=abc` produces NaN without validation | Use `ParseIntPipe` as an optional pipe, or validate with `isNaN()` before passing to the service |
+
+#### Minor (future improvements):
+
+| # | Issue | Fix |
+|---|-------|-----|
+| M1 | Auto-assignment selects global developers, not project-scoped | Consider adding a project-membership concept or document current behavior as intentional |
+| M2 | No explicit timezone documentation on `dueDate` comparison | Add a JSDoc comment on the scheduler explaining why the `timestamptz` comparison is UTC-safe |
+| M3 | `isOverdue` reset on manual priority change is undocumented | Add JSDoc on the `update()` method explaining the `isOverdue = false` reset behavior |
+
+---
+
+## Phase 4 — Code Review & Quality Assurance
+
+**AI Model:** Claude Opus 4.6 (Cursor Agent Mode)
+
+### Prompt
+
+> Apply the final critical security, performance, and TDP validation updates to Phase 4 features. Ensure strict TypeScript compilation and all 199 unit tests pass.
+
+### Changes Applied
+
+#### 1. Escalation Scheduler — Concurrency Guard + Bulk Operations (C1 & C2)
+
+**File:** `src/escalation/escalation.scheduler.ts`
+
+- Added `private isRunning = false` concurrency guard with `try/finally` block — if a cron run overlaps, the duplicate invocation exits immediately with a warning log.
+- Replaced the per-ticket `save()` and `auditLogService.log()` loop with bulk operations:
+  - Modified tickets are collected into an array and saved in one `ticketRepository.save(modifiedTickets)` call.
+  - Audit entries are prepared and batch-inserted via `auditLogService.logMany(auditEntries)`.
+- Result: database roundtrips reduced from **2N** (N saves + N audit logs) to **2** (1 bulk save + 1 bulk audit insert).
+
+#### 2. Fault-Tolerant Audit Logging (C3)
+
+**File:** `src/audit-log/audit-log.service.ts`
+
+- Added `logMany(entries: AuditLogEntry[]): Promise<AuditLog[]>` for bulk audit log insertion.
+- Wrapped the `log()` method body in `try/catch` with `Logger.error()` fallback — audit persistence failures return `null` instead of propagating and crashing user-facing HTTP requests with 500 errors.
+- Return type of `log()` changed from `Promise<AuditLog>` to `Promise<AuditLog | null>` to reflect fault tolerance.
+
+#### 3. Optimistic Locking via @VersionColumn (TDP 2.4/2.5)
+
+**Files:** `src/ticket/ticket.entity.ts`, `src/comment/comment.entity.ts`
+
+- Added `@VersionColumn() version!: number` to both `Ticket` and `Comment` entities.
+- TypeORM transparently checks the version on every `save()` and throws `OptimisticLockVersionMismatchError` on concurrent edit conflict — fulfills TDP requirement "A ticket/comment can't be updated simultaneously by two users or more".
+- No service/controller changes needed.
+
+#### 4. CSV Round-Trip Fidelity
+
+**File:** `src/ticket/ticket.service.ts`
+
+- Extended `CSV_COLUMNS` from 7 to 9 fields: added `'dueDate'` and `'isOverdue'`.
+- Updated `exportToCsv()` row mapping to include `dueDate` (ISO string or empty) and `isOverdue` (boolean).
+- Updated `importFromCsv()` to read optional `dueDate` (parsed as `Date`) and `isOverdue` (string `'true'` comparison) from each CSV row.
+
+#### 5. Test Updates
+
+All 17 test suites updated and passing (199 tests total):
+
+| Spec File | Changes |
+|---|---|
+| `escalation.scheduler.spec.ts` | Rewrote for bulk operations: `repo.save` called once with array, `auditLogService.logMany` replaces multiple `log` calls. Added concurrency guard test. |
+| `audit-log.service.spec.ts` | Added `logMany()` tests (batch insert, empty array). Added fault-tolerance test verifying `log()` returns `null` on DB error. |
+| `ticket.service.spec.ts` | Updated CSV export/import tests to include `dueDate` and `isOverdue` columns. Added `version: 1` to `mockTicket`. |
+| `ticket.controller.spec.ts` | Added `version: 1` to `mockTicket`. |
+| `comment.controller.spec.ts` | Added `version: 1` to `mockComment`. |
+| `comment.service.spec.ts` | Added `version: 1` to `mockComment`. |
+
+### Verification
+
+- **TypeScript compilation:** `npx tsc --noEmit` exits cleanly with zero errors under strict mode.
+- **Unit tests:** All 199 tests pass across 17 suites.
+
+### Summary of All Modified Files
+
+| File | Change |
+|---|---|
+| `src/escalation/escalation.scheduler.ts` | Concurrency guard, bulk save + logMany |
+| `src/audit-log/audit-log.service.ts` | `logMany()`, try/catch in `log()`, Logger |
+| `src/ticket/ticket.entity.ts` | `@VersionColumn()` |
+| `src/comment/comment.entity.ts` | `@VersionColumn()` |
+| `src/ticket/ticket.service.ts` | CSV columns: dueDate, isOverdue |
+| `src/escalation/escalation.scheduler.spec.ts` | Bulk ops + concurrency guard tests |
+| `src/audit-log/audit-log.service.spec.ts` | logMany + fault tolerance tests |
+| `src/ticket/ticket.service.spec.ts` | CSV + version mock |
+| `src/ticket/ticket.controller.spec.ts` | Version mock |
+| `src/comment/comment.controller.spec.ts` | Version mock |
+| `src/comment/comment.service.spec.ts` | Version mock |
+| `prompts.md` | This summary |

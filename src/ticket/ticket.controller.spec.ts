@@ -1,16 +1,16 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import {
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
+import { NotFoundException, BadRequestException } from '@nestjs/common';
+import { Request } from 'express';
 import { TicketController } from './ticket.controller';
 import { TicketService } from './ticket.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 import { Ticket } from './ticket.entity';
 import { TicketStatus } from './enums/ticket-status.enum';
 import { TicketPriority } from './enums/ticket-priority.enum';
 import { TicketType } from './enums/ticket-type.enum';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
+import { Role } from '../user/role.enum';
 
 const now = new Date();
 
@@ -28,14 +28,19 @@ const mockTicket: Ticket = {
   dueDate: null,
   isOverdue: false,
   blockedBy: [],
+  version: 1,
   createdAt: now,
   updatedAt: now,
   deletedAt: null,
 };
 
+const mockRequest = (userId: number): Request =>
+  ({ user: { userId, username: 'admin', role: Role.ADMIN } }) as unknown as Request;
+
 describe('TicketController', () => {
   let controller: TicketController;
   let service: jest.Mocked<TicketService>;
+  let auditLogService: jest.Mocked<AuditLogService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -58,18 +63,21 @@ describe('TicketController', () => {
             importFromCsv: jest.fn(),
           },
         },
+        {
+          provide: AuditLogService,
+          useValue: { log: jest.fn().mockResolvedValue({}) },
+        },
       ],
     }).compile();
 
     controller = module.get<TicketController>(TicketController);
     service = module.get(TicketService);
+    auditLogService = module.get(AuditLogService);
   });
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
   });
-
-  // ---------- findByProject ----------
 
   describe('findByProject', () => {
     it('should return tickets filtered by project', async () => {
@@ -77,17 +85,11 @@ describe('TicketController', () => {
       expect(await controller.findByProject(1)).toEqual([mockTicket]);
     });
 
-    it('should propagate NotFoundException for invalid project', async () => {
-      service.findByProject.mockRejectedValue(
-        new NotFoundException('Project with ID 999 not found'),
-      );
-      await expect(controller.findByProject(999)).rejects.toThrow(
-        NotFoundException,
-      );
+    it('should propagate NotFoundException', async () => {
+      service.findByProject.mockRejectedValue(new NotFoundException());
+      await expect(controller.findByProject(999)).rejects.toThrow(NotFoundException);
     });
   });
-
-  // ---------- findDeleted ----------
 
   describe('findDeleted', () => {
     it('should return soft-deleted tickets for a project', async () => {
@@ -97,34 +99,24 @@ describe('TicketController', () => {
     });
   });
 
-  // ---------- exportCsv ----------
-
   describe('exportCsv', () => {
-    it('should set CSV headers and send the content', async () => {
+    it('should set CSV headers and send content', async () => {
       service.exportToCsv.mockResolvedValue('id,title\n1,Bug\n');
-      const res = {
-        setHeader: jest.fn(),
-        send: jest.fn(),
-      } as never;
+      const res = { setHeader: jest.fn(), send: jest.fn() } as never;
       await controller.exportCsv(1, res);
       expect(service.exportToCsv).toHaveBeenCalledWith(1);
     });
   });
 
-  // ---------- importCsv ----------
-
   describe('importCsv', () => {
     it('should delegate to service and return summary', async () => {
       const summary = { created: 2, failed: 0, errors: [] as string[] };
       service.importFromCsv.mockResolvedValue(summary);
-
       const file = { buffer: Buffer.from('csv') } as Express.Multer.File;
       const result = await controller.importCsv(file, 1);
       expect(result).toEqual(summary);
     });
   });
-
-  // ---------- findOne ----------
 
   describe('findOne', () => {
     it('should return a ticket by ID', async () => {
@@ -133,14 +125,10 @@ describe('TicketController', () => {
     });
 
     it('should propagate NotFoundException', async () => {
-      service.findOne.mockRejectedValue(
-        new NotFoundException('Ticket with ID 999 not found'),
-      );
+      service.findOne.mockRejectedValue(new NotFoundException());
       await expect(controller.findOne(999)).rejects.toThrow(NotFoundException);
     });
   });
-
-  // ---------- create ----------
 
   describe('create', () => {
     const dto: CreateTicketDto = {
@@ -152,95 +140,81 @@ describe('TicketController', () => {
       projectId: 1,
     };
 
-    it('should create and return a ticket', async () => {
+    it('should create the ticket and log audit', async () => {
       service.create.mockResolvedValue(mockTicket);
-      expect(await controller.create(dto)).toEqual(mockTicket);
+      const req = mockRequest(10);
+      const result = await controller.create(dto, req);
+      expect(result).toEqual(mockTicket);
+      expect(auditLogService.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'CREATE', entityType: 'TICKET' }),
+      );
     });
 
-    it('should propagate BadRequestException for invalid project', async () => {
-      service.create.mockRejectedValue(
-        new BadRequestException('Project with ID 999 does not exist'),
-      );
-      await expect(
-        controller.create({ ...dto, projectId: 999 }),
-      ).rejects.toThrow(BadRequestException);
+    it('should propagate BadRequestException', async () => {
+      service.create.mockRejectedValue(new BadRequestException());
+      await expect(controller.create({ ...dto, projectId: 999 }, mockRequest(10))).rejects.toThrow(BadRequestException);
     });
   });
-
-  // ---------- update ----------
 
   describe('update', () => {
     const dto: UpdateTicketDto = { title: 'Updated title' };
 
-    it('should update and return the modified ticket', async () => {
+    it('should update the ticket and log audit', async () => {
       const updated = { ...mockTicket, title: 'Updated title' };
       service.update.mockResolvedValue(updated);
-      expect(await controller.update(1, dto)).toEqual(updated);
+      const req = mockRequest(10);
+      const result = await controller.update(1, dto, req);
+      expect(result).toEqual(updated);
+      expect(auditLogService.log).toHaveBeenCalled();
     });
 
     it('should propagate BadRequestException for DONE ticket', async () => {
-      service.update.mockRejectedValue(
-        new BadRequestException('Cannot update a ticket that is already DONE'),
-      );
-      await expect(controller.update(1, dto)).rejects.toThrow(
-        BadRequestException,
-      );
+      service.update.mockRejectedValue(new BadRequestException());
+      await expect(controller.update(1, dto, mockRequest(10))).rejects.toThrow(BadRequestException);
     });
   });
-
-  // ---------- remove ----------
 
   describe('remove', () => {
-    it('should soft-delete the ticket', async () => {
+    it('should soft-delete and log audit', async () => {
       service.softRemove.mockResolvedValue(undefined);
-      await expect(controller.remove(1)).resolves.toBeUndefined();
+      const req = mockRequest(10);
+      await expect(controller.remove(1, req)).resolves.toBeUndefined();
+      expect(auditLogService.log).toHaveBeenCalled();
     });
 
     it('should propagate NotFoundException', async () => {
-      service.softRemove.mockRejectedValue(
-        new NotFoundException('Ticket with ID 999 not found'),
-      );
-      await expect(controller.remove(999)).rejects.toThrow(NotFoundException);
+      service.softRemove.mockRejectedValue(new NotFoundException());
+      await expect(controller.remove(999, mockRequest(10))).rejects.toThrow(NotFoundException);
     });
   });
-
-  // ---------- restore ----------
 
   describe('restore', () => {
-    it('should restore a soft-deleted ticket', async () => {
+    it('should restore and log audit', async () => {
       service.restore.mockResolvedValue(undefined);
-      await expect(controller.restore(1)).resolves.toBeUndefined();
+      const req = mockRequest(10);
+      await expect(controller.restore(1, req)).resolves.toBeUndefined();
+      expect(auditLogService.log).toHaveBeenCalled();
     });
 
     it('should propagate NotFoundException', async () => {
-      service.restore.mockRejectedValue(
-        new NotFoundException('Soft-deleted ticket with ID 999 not found'),
-      );
-      await expect(controller.restore(999)).rejects.toThrow(NotFoundException);
+      service.restore.mockRejectedValue(new NotFoundException());
+      await expect(controller.restore(999, mockRequest(10))).rejects.toThrow(NotFoundException);
     });
   });
-
-  // ---------- addDependency ----------
 
   describe('addDependency', () => {
-    it('should delegate to service', async () => {
+    it('should delegate to service and log audit', async () => {
       service.addDependency.mockResolvedValue(undefined);
-      await expect(
-        controller.addDependency(1, { blockedBy: 42 }),
-      ).resolves.toBeUndefined();
+      const req = mockRequest(10);
+      await expect(controller.addDependency(1, { blockedBy: 42 }, req)).resolves.toBeUndefined();
+      expect(auditLogService.log).toHaveBeenCalled();
     });
 
-    it('should propagate BadRequestException for cross-project dependency', async () => {
-      service.addDependency.mockRejectedValue(
-        new BadRequestException('Both tickets must belong to the same project'),
-      );
-      await expect(
-        controller.addDependency(1, { blockedBy: 42 }),
-      ).rejects.toThrow(BadRequestException);
+    it('should propagate BadRequestException', async () => {
+      service.addDependency.mockRejectedValue(new BadRequestException());
+      await expect(controller.addDependency(1, { blockedBy: 42 }, mockRequest(10))).rejects.toThrow(BadRequestException);
     });
   });
-
-  // ---------- getDependencies ----------
 
   describe('getDependencies', () => {
     it('should return blocking tickets', async () => {
@@ -249,23 +223,17 @@ describe('TicketController', () => {
     });
   });
 
-  // ---------- removeDependency ----------
-
   describe('removeDependency', () => {
-    it('should delegate to service', async () => {
+    it('should delegate to service and log audit', async () => {
       service.removeDependency.mockResolvedValue(undefined);
-      await expect(
-        controller.removeDependency(1, 42),
-      ).resolves.toBeUndefined();
+      const req = mockRequest(10);
+      await expect(controller.removeDependency(1, 42, req)).resolves.toBeUndefined();
+      expect(auditLogService.log).toHaveBeenCalled();
     });
 
     it('should propagate NotFoundException', async () => {
-      service.removeDependency.mockRejectedValue(
-        new NotFoundException('Dependency not found'),
-      );
-      await expect(controller.removeDependency(1, 42)).rejects.toThrow(
-        NotFoundException,
-      );
+      service.removeDependency.mockRejectedValue(new NotFoundException());
+      await expect(controller.removeDependency(1, 42, mockRequest(10))).rejects.toThrow(NotFoundException);
     });
   });
 });

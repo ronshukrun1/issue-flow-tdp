@@ -6,7 +6,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, Not } from 'typeorm';
 import { stringify } from 'csv-stringify/sync';
 import { parse } from 'csv-parse';
 import { Ticket } from './ticket.entity';
@@ -18,22 +18,30 @@ import { TicketPriority } from './enums/ticket-priority.enum';
 import { TicketType } from './enums/ticket-type.enum';
 import { ProjectService } from '../project/project.service';
 import { UserService } from '../user/user.service';
+import { User } from '../user/user.entity';
+import { Role } from '../user/role.enum';
+import { AuditLogService } from '../audit-log/audit-log.service';
+import { AuditAction } from '../audit-log/enums/audit-action.enum';
 
 /**
  * Encapsulates all business logic for ticket management.
  *
- * Enforces the forward-only status lifecycle and prevents updates
- * to tickets that have reached the `DONE` state.
+ * Enforces the forward-only status lifecycle, prevents updates
+ * to tickets that have reached the `DONE` state, and triggers
+ * auto-assignment when a ticket is created without an assignee.
  */
 @Injectable()
 export class TicketService {
   constructor(
     @InjectRepository(Ticket)
     private readonly ticketRepository: Repository<Ticket>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
     @Inject(forwardRef(() => ProjectService))
     private readonly projectService: ProjectService,
     @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
+    private readonly auditLogService: AuditLogService,
   ) {}
 
   /**
@@ -67,7 +75,9 @@ export class TicketService {
    * Creates and persists a new ticket.
    *
    * Validates that the referenced `projectId` and optional `assigneeId`
-   * point to existing entities before persisting.
+   * point to existing entities before persisting. When `assigneeId` is
+   * absent, auto-assignment selects the least-loaded DEVELOPER in the
+   * project (TDP 3.8).
    *
    * @param dto - Validated creation payload.
    * @returns The newly persisted {@link Ticket} entity.
@@ -103,15 +113,23 @@ export class TicketService {
       dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
       assigneeId: dto.assigneeId ?? null,
     });
-    return this.ticketRepository.save(ticket);
+    const saved = await this.ticketRepository.save(ticket);
+
+    if (saved.assigneeId === null) {
+      const assigned = await this.autoAssign(saved);
+      if (assigned) return assigned;
+    }
+
+    return saved;
   }
 
   /**
    * Updates the mutable fields of an existing ticket.
    *
-   * Enforces two business rules:
+   * Enforces business rules:
    * 1. A ticket with status `DONE` cannot be updated.
    * 2. Status may only move forward in the lifecycle.
+   * 3. Manual priority change resets `isOverdue` (TDP 3.7).
    *
    * @param id  - The numeric ticket identifier.
    * @param dto - Validated update payload (partial).
@@ -177,7 +195,10 @@ export class TicketService {
     if (dto.title !== undefined) ticket.title = dto.title;
     if (dto.description !== undefined) ticket.description = dto.description;
     if (dto.status !== undefined) ticket.status = dto.status;
-    if (dto.priority !== undefined) ticket.priority = dto.priority;
+    if (dto.priority !== undefined) {
+      ticket.priority = dto.priority;
+      ticket.isOverdue = false;
+    }
     if (dto.assigneeId !== undefined) ticket.assigneeId = dto.assigneeId;
     if (dto.dueDate !== undefined) ticket.dueDate = new Date(dto.dueDate);
 
@@ -225,6 +246,89 @@ export class TicketService {
     }
   }
 
+  // ── Auto-Assignment (TDP 3.8) ────────────────────────────────────
+
+  /**
+   * Selects the least-loaded DEVELOPER in the project and assigns
+   * the ticket to them. Ties are broken by registration order
+   * (oldest user first).
+   *
+   * @returns The updated ticket if assigned, or `null` if no DEVELOPERs exist.
+   */
+  private async autoAssign(ticket: Ticket): Promise<Ticket | null> {
+    const result = await this.userRepository
+      .createQueryBuilder('user')
+      .leftJoin(
+        'tickets',
+        'ticket',
+        'ticket."assigneeId" = user.id AND ticket."projectId" = :projectId AND ticket.status != :done AND ticket."deletedAt" IS NULL',
+        { projectId: ticket.projectId, done: TicketStatus.DONE },
+      )
+      .where('user.role = :role', { role: Role.DEVELOPER })
+      .select('user.id', 'userId')
+      .addSelect('COUNT(ticket.id)', 'openTicketCount')
+      .groupBy('user.id')
+      .addGroupBy('user."createdAt"')
+      .orderBy('"openTicketCount"', 'ASC')
+      .addOrderBy('user."createdAt"', 'ASC')
+      .limit(1)
+      .getRawOne<{ userId: number; openTicketCount: string }>();
+
+    if (!result) return null;
+
+    ticket.assigneeId = result.userId;
+    const saved = await this.ticketRepository.save(ticket);
+
+    await this.auditLogService.log({
+      action: AuditAction.AUTO_ASSIGN,
+      entityType: 'TICKET',
+      entityId: ticket.id,
+      performedBy: null,
+      actor: 'SYSTEM',
+    });
+
+    return saved;
+  }
+
+  // ── Workload API ──────────────────────────────────────────────────
+
+  /**
+   * Returns workload data for all DEVELOPER users, scoped to a project.
+   *
+   * @param projectId - The project to compute workload for.
+   * @returns An array of `{ userId, username, openTicketCount }` sorted
+   *          by `openTicketCount` ascending.
+   * @throws {NotFoundException} When the project does not exist.
+   */
+  async getProjectWorkload(
+    projectId: number,
+  ): Promise<{ userId: number; username: string; openTicketCount: number }[]> {
+    await this.projectService.findOne(projectId);
+
+    const rows = await this.userRepository
+      .createQueryBuilder('user')
+      .leftJoin(
+        'tickets',
+        'ticket',
+        'ticket."assigneeId" = user.id AND ticket."projectId" = :projectId AND ticket.status != :done AND ticket."deletedAt" IS NULL',
+        { projectId, done: TicketStatus.DONE },
+      )
+      .where('user.role = :role', { role: Role.DEVELOPER })
+      .select('user.id', 'userId')
+      .addSelect('user.username', 'username')
+      .addSelect('COUNT(ticket.id)', 'openTicketCount')
+      .groupBy('user.id')
+      .addGroupBy('user.username')
+      .orderBy('"openTicketCount"', 'ASC')
+      .getRawMany<{ userId: number; username: string; openTicketCount: string }>();
+
+    return rows.map((r) => ({
+      userId: Number(r.userId),
+      username: r.username,
+      openTicketCount: Number(r.openTicketCount),
+    }));
+  }
+
   // ── CSV Export / Import ─────────────────────────────────────────
 
   /** Columns included in CSV export and expected on import. */
@@ -236,6 +340,8 @@ export class TicketService {
     'priority',
     'type',
     'assigneeId',
+    'dueDate',
+    'isOverdue',
   ] as const;
 
   /**
@@ -259,6 +365,8 @@ export class TicketService {
       priority: t.priority,
       type: t.type,
       assigneeId: t.assigneeId ?? '',
+      dueDate: t.dueDate ? t.dueDate.toISOString() : '',
+      isOverdue: t.isOverdue,
     }));
 
     return stringify(rows, {
@@ -323,6 +431,8 @@ export class TicketService {
         type: row['type'] as TicketType,
         projectId,
         assigneeId: row['assigneeId'] ? Number(row['assigneeId']) : null,
+        dueDate: row['dueDate'] ? new Date(row['dueDate']) : null,
+        isOverdue: row['isOverdue'] === 'true',
       });
 
       try {

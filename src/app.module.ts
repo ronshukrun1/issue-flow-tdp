@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { UserModule } from './user/user.module';
@@ -10,6 +11,8 @@ import { ProjectModule } from './project/project.module';
 import { TicketModule } from './ticket/ticket.module';
 import { CommentModule } from './comment/comment.module';
 import { AttachmentModule } from './attachment/attachment.module';
+import { AuditLogModule } from './audit-log/audit-log.module';
+import { EscalationModule } from './escalation/escalation.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 
@@ -42,12 +45,15 @@ import { RolesGuard } from './auth/guards/roles.guard';
         synchronize: config.get<string>('NODE_ENV') !== 'production',
       }),
     }),
+    ScheduleModule.forRoot(),
+    AuditLogModule,
     UserModule,
     AuthModule,
     ProjectModule,
     TicketModule,
     CommentModule,
     AttachmentModule,
+    EscalationModule,
   ],
   controllers: [AppController],
   providers: [
