@@ -1371,3 +1371,61 @@ All 17 test suites updated and passing (199 tests total):
 | `src/attachment/attachment.controller.spec.ts` | Rewritten with audit log assertions |
 | `src/ticket/ticket.service.spec.ts` | CSV auto-assign mocks + dependency guardrail tests |
 | `prompts.md` | This summary |
+
+---
+
+## Logger Suppression & Integration Test Suite
+
+**Prompt:** "Suppress expected test Logger noise and implement a comprehensive full-flow integration spec."
+
+**Model:** Claude Opus 4.6
+
+### Changes Applied
+
+#### 1. Suppress Expected Test Logger Noise
+- **`src/audit-log/audit-log.service.spec.ts`** — Added `jest.spyOn(Logger.prototype, 'error').mockImplementation()` in `beforeAll()` with `mockRestore()` in `afterAll()` to suppress the `[ERROR] [AuditLogService] Failed to persist audit log: DB connection lost` output during fault-tolerance tests. Terminal output is now clean.
+
+#### 2. Full-Flow Integration Test
+- **`src/integration/issueflow-flow.integration.spec.ts`** — Created a comprehensive integration test that boots a `TestingModule` with mock repositories and exercises cross-module interactions:
+  - **Step 1 — Authentication:** Validates JWT signing via `AuthService.login()` and token revocation via `revokeToken()`/`isTokenRevoked()`.
+  - **Step 2 — Ticket Creation with Auto-Assignment:** Creates a ticket without `assigneeId`, verifies `autoAssign()` selects the least-loaded DEVELOPER (alice, id: 1), and confirms an `AUTO_ASSIGN` audit log entry with `actor: 'SYSTEM'` and `performedBy: null`.
+  - **Step 3 — Comment with @Mention:** Creates a comment containing `@alice`, verifies the mention parsing engine resolves the user and populates `mentionedUsers`.
+  - **Step 4 — Audit Trail Consistency:** Performs multiple state-changing operations, then asserts the audit store contains both `USER` and `SYSTEM` actor entries with correct metadata (action, entityType, performedBy).
+
+#### 3. Verification
+- `npx tsc --noEmit` — **0 errors** under strict mode.
+- `npx jest --no-cache` — **210 tests passed**, 18 suites, 0 failures, clean terminal output.
+
+### Execution Log
+
+```
+PASS src/user/user.service.spec.ts
+PASS src/project/project.service.spec.ts
+PASS src/comment/comment.service.spec.ts
+PASS src/audit-log/audit-log.service.spec.ts
+PASS src/integration/issueflow-flow.integration.spec.ts
+PASS src/escalation/escalation.scheduler.spec.ts
+PASS src/ticket/ticket.service.spec.ts
+PASS src/ticket/ticket.controller.spec.ts
+PASS src/project/project.controller.spec.ts
+PASS src/auth/auth.service.spec.ts
+PASS src/comment/mention.util.spec.ts
+PASS src/audit-log/audit-log.controller.spec.ts
+PASS src/app.controller.spec.ts
+PASS src/auth/auth.controller.spec.ts
+PASS src/attachment/attachment.service.spec.ts
+PASS src/attachment/attachment.controller.spec.ts
+PASS src/user/user.controller.spec.ts
+PASS src/comment/comment.controller.spec.ts
+
+Test Suites: 18 passed, 18 total
+Tests:       210 passed, 210 total
+```
+
+### Files Modified/Created
+
+| File | Change |
+|---|---|
+| `src/audit-log/audit-log.service.spec.ts` | Logger.prototype.error spy to suppress noise |
+| `src/integration/issueflow-flow.integration.spec.ts` | New full-flow integration test (5 tests) |
+| `prompts.md` | This summary |

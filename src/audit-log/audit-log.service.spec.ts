@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Logger } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AuditLogService } from './audit-log.service';
@@ -21,6 +22,16 @@ const mockAuditLog: AuditLog = {
 describe('AuditLogService', () => {
   let service: AuditLogService;
   let repo: jest.Mocked<Repository<AuditLog>>;
+
+  let loggerSpy: jest.SpyInstance;
+
+  beforeAll(() => {
+    loggerSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+  });
+
+  afterAll(() => {
+    loggerSpy.mockRestore();
+  });
 
   beforeEach(async () => {
     const qb = {
