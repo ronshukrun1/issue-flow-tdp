@@ -7,6 +7,9 @@ import { AppService } from './app.service';
 import { UserModule } from './user/user.module';
 import { AuthModule } from './auth/auth.module';
 import { ProjectModule } from './project/project.module';
+import { TicketModule } from './ticket/ticket.module';
+import { CommentModule } from './comment/comment.module';
+import { AttachmentModule } from './attachment/attachment.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 
@@ -42,6 +45,9 @@ import { RolesGuard } from './auth/guards/roles.guard';
     UserModule,
     AuthModule,
     ProjectModule,
+    TicketModule,
+    CommentModule,
+    AttachmentModule,
   ],
   controllers: [AppController],
   providers: [

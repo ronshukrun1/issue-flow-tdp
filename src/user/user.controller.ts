@@ -5,7 +5,9 @@ import {
   Delete,
   Param,
   Body,
+  Query,
   ParseIntPipe,
+  DefaultValuePipe,
 } from '@nestjs/common';
 import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -13,6 +15,8 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { User } from './user.entity';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from './role.enum';
+import { CommentService } from '../comment/comment.service';
+import { Comment } from '../comment/comment.entity';
 
 /**
  * Handles all HTTP requests for the `/users` resource.
@@ -23,7 +27,10 @@ import { Role } from './role.enum';
  */
 @Controller('users')
 export class UserController {
-  constructor(private readonly userService: UserService) {}
+  constructor(
+    private readonly userService: UserService,
+    private readonly commentService: CommentService,
+  ) {}
 
   /**
    * `GET /users` — returns every registered user.
@@ -41,6 +48,23 @@ export class UserController {
   @Get(':userId')
   findOne(@Param('userId', ParseIntPipe) userId: number): Promise<User> {
     return this.userService.findOne(userId);
+  }
+
+  /**
+   * `GET /users/:userId/mentions` — returns a paginated list of comments
+   * where the user was `@mentioned`.
+   *
+   * @param userId   - Path parameter parsed as an integer.
+   * @param page     - Optional 1-based page number (defaults to 1).
+   * @param pageSize - Optional page size (defaults to 10).
+   */
+  @Get(':userId/mentions')
+  findMentions(
+    @Param('userId', ParseIntPipe) userId: number,
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+    @Query('pageSize', new DefaultValuePipe(10), ParseIntPipe) pageSize: number,
+  ): Promise<{ data: Comment[]; total: number; page: number }> {
+    return this.commentService.findMentionsForUser(userId, page, pageSize);
   }
 
   /**

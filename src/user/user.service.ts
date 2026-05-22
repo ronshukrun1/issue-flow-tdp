@@ -4,7 +4,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, QueryFailedError } from 'typeorm';
+import { Repository, QueryFailedError, In } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { User } from './user.entity';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -86,6 +86,24 @@ export class UserService {
       .addSelect('user.password')
       .where('user.username = :username', { username })
       .getOne();
+  }
+
+  /**
+   * Retrieves users whose usernames match any of the supplied values.
+   *
+   * Used by the comment/mention subsystem to resolve `@username`
+   * tokens in bulk. Comparison is case-insensitive because usernames
+   * are lowercased at the query level.
+   *
+   * @param usernames - Lowercased username strings to look up.
+   * @returns An array of matching {@link User} entities (may be fewer than input if some don't exist).
+   */
+  async findByUsernames(usernames: string[]): Promise<User[]> {
+    if (usernames.length === 0) return [];
+    return this.userRepository
+      .createQueryBuilder('user')
+      .where('LOWER(user.username) IN (:...usernames)', { usernames })
+      .getMany();
   }
 
   /**

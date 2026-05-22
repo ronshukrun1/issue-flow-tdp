@@ -133,6 +133,26 @@ describe('UserService', () => {
     });
   });
 
+  // ---------- findByUsernames ----------
+
+  describe('findByUsernames', () => {
+    it('should return matching users for given usernames', async () => {
+      const qb = {
+        where: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([mockUser]),
+      };
+      repo.createQueryBuilder.mockReturnValue(qb as never);
+
+      const result = await service.findByUsernames(['jdoe']);
+      expect(result).toEqual([mockUser]);
+    });
+
+    it('should return an empty array when given empty input', async () => {
+      const result = await service.findByUsernames([]);
+      expect(result).toEqual([]);
+    });
+  });
+
   // ---------- create ----------
 
   describe('create', () => {

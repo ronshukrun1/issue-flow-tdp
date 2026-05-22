@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException, ConflictException } from '@nestjs/common';
 import { UserController } from './user.controller';
 import { UserService } from './user.service';
+import { CommentService } from '../comment/comment.service';
 import { User } from './user.entity';
 import { Role } from './role.enum';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -23,6 +24,7 @@ const mockUser: User = {
 describe('UserController', () => {
   let controller: UserController;
   let service: jest.Mocked<UserService>;
+  let commentService: jest.Mocked<CommentService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -38,11 +40,18 @@ describe('UserController', () => {
             remove: jest.fn(),
           },
         },
+        {
+          provide: CommentService,
+          useValue: {
+            findMentionsForUser: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
     controller = module.get<UserController>(UserController);
     service = module.get(UserService);
+    commentService = module.get(CommentService);
   });
 
   it('should be defined', () => {
@@ -134,6 +143,28 @@ describe('UserController', () => {
         new NotFoundException('User with ID 999 not found'),
       );
       await expect(controller.remove(999)).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  // ---------- findMentions ----------
+
+  describe('findMentions', () => {
+    it('should return paginated mentions for a user', async () => {
+      const mentionsResult = { data: [], total: 0, page: 1 };
+      commentService.findMentionsForUser.mockResolvedValue(mentionsResult);
+
+      const result = await controller.findMentions(1, 1, 10);
+      expect(result).toEqual(mentionsResult);
+      expect(commentService.findMentionsForUser).toHaveBeenCalledWith(1, 1, 10);
+    });
+
+    it('should propagate NotFoundException for non-existent user', async () => {
+      commentService.findMentionsForUser.mockRejectedValue(
+        new NotFoundException('User with ID 999 not found'),
+      );
+      await expect(controller.findMentions(999, 1, 10)).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 });

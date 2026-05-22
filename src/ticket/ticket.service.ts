@@ -1,0 +1,446 @@
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  Inject,
+  forwardRef,
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { stringify } from 'csv-stringify/sync';
+import { parse } from 'csv-parse';
+import { Ticket } from './ticket.entity';
+import { CreateTicketDto } from './dto/create-ticket.dto';
+import { UpdateTicketDto } from './dto/update-ticket.dto';
+import { AddDependencyDto } from './dto/add-dependency.dto';
+import { TicketStatus, STATUS_ORDER } from './enums/ticket-status.enum';
+import { TicketPriority } from './enums/ticket-priority.enum';
+import { TicketType } from './enums/ticket-type.enum';
+import { ProjectService } from '../project/project.service';
+import { UserService } from '../user/user.service';
+
+/**
+ * Encapsulates all business logic for ticket management.
+ *
+ * Enforces the forward-only status lifecycle and prevents updates
+ * to tickets that have reached the `DONE` state.
+ */
+@Injectable()
+export class TicketService {
+  constructor(
+    @InjectRepository(Ticket)
+    private readonly ticketRepository: Repository<Ticket>,
+    @Inject(forwardRef(() => ProjectService))
+    private readonly projectService: ProjectService,
+    @Inject(forwardRef(() => UserService))
+    private readonly userService: UserService,
+  ) {}
+
+  /**
+   * Retrieves all active tickets belonging to a project.
+   *
+   * @param projectId - The project to filter by.
+   * @returns An array of {@link Ticket} entities.
+   * @throws {NotFoundException} When the project does not exist.
+   */
+  async findByProject(projectId: number): Promise<Ticket[]> {
+    await this.projectService.findOne(projectId);
+    return this.ticketRepository.find({ where: { projectId } });
+  }
+
+  /**
+   * Retrieves a single active ticket by its primary key.
+   *
+   * @param id - The numeric ticket identifier.
+   * @returns The matching {@link Ticket} entity.
+   * @throws {NotFoundException} When no active ticket with the given ID exists.
+   */
+  async findOne(id: number): Promise<Ticket> {
+    const ticket = await this.ticketRepository.findOneBy({ id });
+    if (!ticket) {
+      throw new NotFoundException(`Ticket with ID ${id} not found`);
+    }
+    return ticket;
+  }
+
+  /**
+   * Creates and persists a new ticket.
+   *
+   * Validates that the referenced `projectId` and optional `assigneeId`
+   * point to existing entities before persisting.
+   *
+   * @param dto - Validated creation payload.
+   * @returns The newly persisted {@link Ticket} entity.
+   * @throws {BadRequestException} When the project or assignee does not exist.
+   */
+  async create(dto: CreateTicketDto): Promise<Ticket> {
+    try {
+      await this.projectService.findOne(dto.projectId);
+    } catch (error: unknown) {
+      if (error instanceof NotFoundException) {
+        throw new BadRequestException(
+          `Project with ID ${dto.projectId} does not exist`,
+        );
+      }
+      throw error;
+    }
+
+    if (dto.assigneeId !== undefined && dto.assigneeId !== null) {
+      try {
+        await this.userService.findOne(dto.assigneeId);
+      } catch (error: unknown) {
+        if (error instanceof NotFoundException) {
+          throw new BadRequestException(
+            `Assignee with ID ${dto.assigneeId} does not exist`,
+          );
+        }
+        throw error;
+      }
+    }
+
+    const ticket = this.ticketRepository.create({
+      ...dto,
+      dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
+      assigneeId: dto.assigneeId ?? null,
+    });
+    return this.ticketRepository.save(ticket);
+  }
+
+  /**
+   * Updates the mutable fields of an existing ticket.
+   *
+   * Enforces two business rules:
+   * 1. A ticket with status `DONE` cannot be updated.
+   * 2. Status may only move forward in the lifecycle.
+   *
+   * @param id  - The numeric ticket identifier.
+   * @param dto - Validated update payload (partial).
+   * @returns The updated {@link Ticket} entity.
+   * @throws {NotFoundException} When the ticket does not exist.
+   * @throws {BadRequestException} When the ticket is DONE or status moves backward.
+   */
+  async update(id: number, dto: UpdateTicketDto): Promise<Ticket> {
+    const ticket = await this.findOne(id);
+
+    if (ticket.status === TicketStatus.DONE) {
+      throw new BadRequestException(
+        'Cannot update a ticket that is already DONE',
+      );
+    }
+
+    if (dto.status !== undefined) {
+      const currentOrder = STATUS_ORDER[ticket.status];
+      const newOrder = STATUS_ORDER[dto.status];
+      if (newOrder <= currentOrder) {
+        throw new BadRequestException(
+          `Invalid status transition: ${ticket.status} → ${dto.status}. Status can only move forward.`,
+        );
+      }
+
+      if (dto.status === TicketStatus.DONE) {
+        const unresolvedCount = await this.ticketRepository
+          .createQueryBuilder('ticket')
+          .innerJoin(
+            'ticket_dependencies',
+            'dep',
+            'dep."ticketId" = :ticketId',
+            { ticketId: id },
+          )
+          .innerJoin(
+            'tickets',
+            'blocker',
+            'blocker.id = dep."blockedById"',
+          )
+          .where('blocker.status != :done', { done: TicketStatus.DONE })
+          .getCount();
+        if (unresolvedCount > 0) {
+          throw new BadRequestException(
+            `Cannot transition to DONE: ${unresolvedCount} unresolved blocker(s)`,
+          );
+        }
+      }
+    }
+
+    if (dto.assigneeId !== undefined) {
+      try {
+        await this.userService.findOne(dto.assigneeId);
+      } catch (error: unknown) {
+        if (error instanceof NotFoundException) {
+          throw new BadRequestException(
+            `Assignee with ID ${dto.assigneeId} does not exist`,
+          );
+        }
+        throw error;
+      }
+    }
+
+    if (dto.title !== undefined) ticket.title = dto.title;
+    if (dto.description !== undefined) ticket.description = dto.description;
+    if (dto.status !== undefined) ticket.status = dto.status;
+    if (dto.priority !== undefined) ticket.priority = dto.priority;
+    if (dto.assigneeId !== undefined) ticket.assigneeId = dto.assigneeId;
+    if (dto.dueDate !== undefined) ticket.dueDate = new Date(dto.dueDate);
+
+    return this.ticketRepository.save(ticket);
+  }
+
+  /**
+   * Soft-deletes a ticket by populating its `deletedAt` timestamp.
+   *
+   * @param id - The numeric ticket identifier.
+   * @throws {NotFoundException} When the ticket does not exist.
+   */
+  async softRemove(id: number): Promise<void> {
+    const ticket = await this.findOne(id);
+    await this.ticketRepository.softRemove(ticket);
+  }
+
+  /**
+   * Lists all soft-deleted tickets for a given project.
+   *
+   * @param projectId - The project to filter by.
+   * @returns An array of soft-deleted {@link Ticket} entities.
+   */
+  async findDeleted(projectId: number): Promise<Ticket[]> {
+    return this.ticketRepository
+      .createQueryBuilder('ticket')
+      .withDeleted()
+      .where('ticket.projectId = :projectId', { projectId })
+      .andWhere('ticket.deletedAt IS NOT NULL')
+      .getMany();
+  }
+
+  /**
+   * Restores a previously soft-deleted ticket.
+   *
+   * @param id - The numeric ticket identifier.
+   * @throws {NotFoundException} When no soft-deleted ticket with the given ID exists.
+   */
+  async restore(id: number): Promise<void> {
+    const result = await this.ticketRepository.restore(id);
+    if (result.affected === 0) {
+      throw new NotFoundException(
+        `Soft-deleted ticket with ID ${id} not found`,
+      );
+    }
+  }
+
+  // ── CSV Export / Import ─────────────────────────────────────────
+
+  /** Columns included in CSV export and expected on import. */
+  private static readonly CSV_COLUMNS = [
+    'id',
+    'title',
+    'description',
+    'status',
+    'priority',
+    'type',
+    'assigneeId',
+  ] as const;
+
+  /**
+   * Exports all active tickets for a project as a CSV string.
+   *
+   * @param projectId - The project whose tickets to export.
+   * @returns A CSV string with header row and one row per ticket.
+   * @throws {NotFoundException} When the project does not exist.
+   */
+  async exportToCsv(projectId: number): Promise<string> {
+    await this.projectService.findOne(projectId);
+    const tickets = await this.ticketRepository.find({
+      where: { projectId },
+    });
+
+    const rows = tickets.map((t) => ({
+      id: t.id,
+      title: t.title,
+      description: t.description,
+      status: t.status,
+      priority: t.priority,
+      type: t.type,
+      assigneeId: t.assigneeId ?? '',
+    }));
+
+    return stringify(rows, {
+      header: true,
+      columns: [...TicketService.CSV_COLUMNS],
+    });
+  }
+
+  /**
+   * Imports tickets from a CSV buffer into a project.
+   *
+   * Uses a stream-based parser to avoid loading the entire file into
+   * memory at once. Each row is validated individually; invalid rows
+   * are collected in the `errors` array rather than aborting the import.
+   *
+   * @param projectId  - The target project for imported tickets.
+   * @param fileBuffer - Raw CSV bytes from the uploaded file.
+   * @returns A summary with counts of created/failed rows and error messages.
+   * @throws {NotFoundException} When the project does not exist.
+   */
+  async importFromCsv(
+    projectId: number,
+    fileBuffer: Buffer,
+  ): Promise<{ created: number; failed: number; errors: string[] }> {
+    await this.projectService.findOne(projectId);
+
+    const validStatuses = new Set(Object.values(TicketStatus));
+    const validPriorities = new Set(Object.values(TicketPriority));
+    const validTypes = new Set(Object.values(TicketType));
+
+    let created = 0;
+    let failed = 0;
+    const errors: string[] = [];
+
+    const records = await this.parseCsvStream(fileBuffer);
+
+    for (let i = 0; i < records.length; i++) {
+      const row = records[i];
+      const rowNum = i + 2;
+      const rowErrors: string[] = [];
+
+      if (!row['title']?.trim()) rowErrors.push('title is required');
+      if (!row['description']?.trim()) rowErrors.push('description is required');
+      if (!validStatuses.has(row['status'] as TicketStatus))
+        rowErrors.push(`invalid status '${row['status']}'`);
+      if (!validPriorities.has(row['priority'] as TicketPriority))
+        rowErrors.push(`invalid priority '${row['priority']}'`);
+      if (!validTypes.has(row['type'] as TicketType))
+        rowErrors.push(`invalid type '${row['type']}'`);
+
+      if (rowErrors.length > 0) {
+        failed++;
+        errors.push(`Row ${rowNum}: ${rowErrors.join('; ')}`);
+        continue;
+      }
+
+      const ticket = this.ticketRepository.create({
+        title: row['title'].trim(),
+        description: row['description'].trim(),
+        status: row['status'] as TicketStatus,
+        priority: row['priority'] as TicketPriority,
+        type: row['type'] as TicketType,
+        projectId,
+        assigneeId: row['assigneeId'] ? Number(row['assigneeId']) : null,
+      });
+
+      try {
+        await this.ticketRepository.save(ticket);
+        created++;
+      } catch (error: unknown) {
+        failed++;
+        const msg =
+          error instanceof Error ? error.message : 'unknown error';
+        errors.push(`Row ${rowNum}: ${msg}`);
+      }
+    }
+
+    return { created, failed, errors };
+  }
+
+  /**
+   * Parses a CSV buffer using a stream-based parser to keep memory
+   * consumption proportional to the current row rather than the
+   * entire file.
+   */
+  private parseCsvStream(
+    buffer: Buffer,
+  ): Promise<Record<string, string>[]> {
+    return new Promise((resolve, reject) => {
+      const records: Record<string, string>[] = [];
+      const { Readable } = require('stream') as typeof import('stream');
+      const stream = Readable.from(buffer);
+      const parser = stream.pipe(
+        parse({ columns: true, skip_empty_lines: true, trim: true }),
+      );
+      parser.on('data', (row: Record<string, string>) => records.push(row));
+      parser.on('end', () => resolve(records));
+      parser.on('error', () =>
+        reject(new BadRequestException('Invalid CSV format')),
+      );
+    });
+  }
+
+  // ── Dependency management ──────────────────────────────────────
+
+  /**
+   * Adds a blocker dependency to a ticket.
+   *
+   * Both tickets must exist and belong to the same project.
+   *
+   * @param ticketId - The ticket that is being blocked.
+   * @param dto      - Contains the `blockedBy` ticket ID.
+   * @throws {NotFoundException} When either ticket does not exist.
+   * @throws {BadRequestException} When the tickets belong to different projects.
+   */
+  async addDependency(ticketId: number, dto: AddDependencyDto): Promise<void> {
+    const ticket = await this.ticketRepository.findOne({
+      where: { id: ticketId },
+      relations: ['blockedBy'],
+    });
+    if (!ticket) {
+      throw new NotFoundException(`Ticket with ID ${ticketId} not found`);
+    }
+
+    const blocker = await this.findOne(dto.blockedBy);
+
+    if (ticket.projectId !== blocker.projectId) {
+      throw new BadRequestException(
+        'Both tickets must belong to the same project',
+      );
+    }
+
+    ticket.blockedBy.push(blocker);
+    await this.ticketRepository.save(ticket);
+  }
+
+  /**
+   * Returns all tickets that block the given ticket.
+   *
+   * @param ticketId - The ticket whose blockers to retrieve.
+   * @returns An array of blocking {@link Ticket} entities (id, title, status).
+   * @throws {NotFoundException} When the ticket does not exist.
+   */
+  async getDependencies(ticketId: number): Promise<Ticket[]> {
+    const ticket = await this.ticketRepository.findOne({
+      where: { id: ticketId },
+      relations: ['blockedBy'],
+    });
+    if (!ticket) {
+      throw new NotFoundException(`Ticket with ID ${ticketId} not found`);
+    }
+    return ticket.blockedBy;
+  }
+
+  /**
+   * Removes a blocker dependency from a ticket.
+   *
+   * @param ticketId  - The ticket that is being blocked.
+   * @param blockerId - The blocker ticket to remove.
+   * @throws {NotFoundException} When the ticket does not exist or the dependency is not found.
+   */
+  async removeDependency(
+    ticketId: number,
+    blockerId: number,
+  ): Promise<void> {
+    const ticket = await this.ticketRepository.findOne({
+      where: { id: ticketId },
+      relations: ['blockedBy'],
+    });
+    if (!ticket) {
+      throw new NotFoundException(`Ticket with ID ${ticketId} not found`);
+    }
+
+    const original = ticket.blockedBy.length;
+    ticket.blockedBy = ticket.blockedBy.filter((b) => b.id !== blockerId);
+
+    if (ticket.blockedBy.length === original) {
+      throw new NotFoundException(
+        `Dependency on blocker ${blockerId} not found for ticket ${ticketId}`,
+      );
+    }
+
+    await this.ticketRepository.save(ticket);
+  }
+}

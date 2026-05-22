@@ -561,3 +561,401 @@ All **23 unit tests** pass (3 test suites):
 
 - **TypeScript strict compilation:** `npx tsc --noEmit` — 0 errors.
 - **Unit tests:** 66 passed across 7 test suites (gained 1 new test for narrowed error propagation).
+
+---
+
+## Phase 3 — Tickets, Comments & Mentions
+
+### Prompt
+
+> We are starting Phase 3: Tickets Management, Comments, and Mentions APIs based on the project requirements and README.md contract. Implement the following features under strict TypeScript rules:
+>
+> 1. **Ticket Module** — Entity with enums (Status: TODO, IN_PROGRESS, IN_REVIEW, DONE; Priority: LOW, MEDIUM, HIGH, CRITICAL; Type: BUG, FEATURE, TECHNICAL), soft-delete, `isOverdue` flag, ManyToOne relations to Project and User. CRUD endpoints matching the README contract. Business rules: tickets cannot be updated once DONE; status transitions are forward-only.
+> 2. **Comment & Mentions Module** — Entity with ManyToMany `mentionedUsers` join table. `@username` mention parsing via regex. CRUD endpoints nested under `/tickets/:ticketId/comments`. Mentions are re-evaluated on every create/update.
+> 3. **Mentions Endpoint** — `GET /users/:userId/mentions` on UserController with pagination, delegating to CommentService.
+> 4. **Wire into AppModule** — Import TicketModule and CommentModule.
+> 5. **Unit Tests** — Comprehensive coverage for all new services, controllers, and the mention-parsing utility.
+
+### AI Model
+
+Claude Opus 4.6 (Cursor Agent mode)
+
+### Plan Summary
+
+- Enum values follow the TDP requirements exactly
+- Ticket status lifecycle enforced: forward-only transitions, DONE tickets immutable
+- `isOverdue` is a database column (boolean, default false) for future auto-escalation
+- Mention parsing uses case-insensitive regex `/\B@(\w+)/gi`; results are unique, lowercased
+- Comment `mentionedUsers` stored in a `comment_mentions` join table via `@ManyToMany`
+- `GET /users/:userId/mentions` lives on UserController, delegates to CommentService
+- Circular dependency between UserModule and CommentModule resolved with `forwardRef()`
+
+### Implementation Summary
+
+#### Ticket Module (`src/ticket/`)
+
+- **Enums:** `TicketStatus` (TODO, IN_PROGRESS, IN_REVIEW, DONE) with `STATUS_ORDER` map, `TicketPriority` (LOW, MEDIUM, HIGH, CRITICAL), `TicketType` (BUG, FEATURE, TECHNICAL)
+- **Entity:** `Ticket` with all required fields, `@ManyToOne` to Project (CASCADE) and User (SET NULL), `@DeleteDateColumn` for soft-delete, `isOverdue` boolean column
+- **DTOs:** `CreateTicketDto` (strict enum validation, string lengths, optional assigneeId/dueDate), `UpdateTicketDto` (all fields optional)
+- **Service:** CRUD + soft-delete/restore, validates projectId and assigneeId existence, enforces DONE immutability and forward-only status transitions
+- **Controller:** 7 endpoints matching README contract; `GET /tickets/deleted` and `POST /tickets/:ticketId/restore` restricted to ADMIN
+- **Module:** Imports ProjectModule and UserModule, exports TicketService
+
+#### Comment Module (`src/comment/`)
+
+- **Entity:** `Comment` with `@ManyToOne` to Ticket (CASCADE) and User (CASCADE), `@ManyToMany` to User via `comment_mentions` join table
+- **DTOs:** `CreateCommentDto` (authorId + content), `UpdateCommentDto` (content only)
+- **Mention Utility:** `extractMentions()` pure function using `/\B@(\w+)/gi` regex
+- **Service:** CRUD with automatic mention parsing/resolution on create/update, `findMentionsForUser()` with pagination
+- **Controller:** 4 endpoints nested under `/tickets/:ticketId/comments`
+- **Module:** Imports TicketModule and UserModule (via forwardRef), exports CommentService
+
+#### User Module Changes
+
+- Added `findByUsernames()` method to UserService for bulk mention resolution
+- Added `GET /users/:userId/mentions` endpoint to UserController
+- UserModule now imports CommentModule via `forwardRef()`
+
+#### AppModule
+
+- Added TicketModule and CommentModule to imports array
+
+### Files Created / Modified
+
+| File | Purpose |
+|------|---------|
+| `src/ticket/enums/ticket-status.enum.ts` | TicketStatus enum with STATUS_ORDER map |
+| `src/ticket/enums/ticket-priority.enum.ts` | TicketPriority enum |
+| `src/ticket/enums/ticket-type.enum.ts` | TicketType enum |
+| `src/ticket/ticket.entity.ts` | Ticket entity with relations, soft-delete, isOverdue |
+| `src/ticket/dto/create-ticket.dto.ts` | Validated DTO for ticket creation |
+| `src/ticket/dto/update-ticket.dto.ts` | Validated DTO for ticket updates |
+| `src/ticket/ticket.service.ts` | Ticket CRUD + status lifecycle enforcement |
+| `src/ticket/ticket.controller.ts` | 7 ticket endpoints matching README contract |
+| `src/ticket/ticket.module.ts` | TicketModule wiring |
+| `src/ticket/ticket.service.spec.ts` | 22 unit tests for TicketService |
+| `src/ticket/ticket.controller.spec.ts` | 13 unit tests for TicketController |
+| `src/comment/comment.entity.ts` | Comment entity with ManyToMany mentionedUsers |
+| `src/comment/dto/create-comment.dto.ts` | Validated DTO for comment creation |
+| `src/comment/dto/update-comment.dto.ts` | Validated DTO for comment updates |
+| `src/comment/mention.util.ts` | extractMentions() pure utility function |
+| `src/comment/comment.service.ts` | Comment CRUD + mention parsing/resolution + pagination |
+| `src/comment/comment.controller.ts` | 4 comment endpoints |
+| `src/comment/comment.module.ts` | CommentModule wiring with forwardRef |
+| `src/comment/mention.util.spec.ts` | 9 unit tests for mention regex |
+| `src/comment/comment.service.spec.ts` | 13 unit tests for CommentService |
+| `src/comment/comment.controller.spec.ts` | 9 unit tests for CommentController |
+| `src/user/user.service.ts` | Added findByUsernames() method |
+| `src/user/user.controller.ts` | Added GET /users/:userId/mentions endpoint |
+| `src/user/user.module.ts` | Added forwardRef(() => CommentModule) import |
+| `src/user/user.service.spec.ts` | Added 2 tests for findByUsernames() |
+| `src/user/user.controller.spec.ts` | Added CommentService mock + 2 tests for findMentions |
+| `src/app.module.ts` | Added TicketModule and CommentModule imports |
+
+### Verification
+
+- **TypeScript strict compilation:** `npx tsc --noEmit` — 0 errors.
+- **Unit tests:** 137 passed across 12 test suites.
+
+---
+
+## Phase 3b — Dependencies, Attachments & CSV Export/Import
+
+### Prompt
+
+> Complete Phase 3 by implementing 3 remaining sub-features for the Ticket module:
+>
+> 1. **Ticket Dependencies** (TDP 3.2) — Self-referencing ManyToMany on Ticket for blockers, 3 endpoints (add/list/remove), same-project constraint, DONE transition guard (cannot move to DONE with unresolved blockers).
+> 2. **Attachment Management** (TDP 3.3) — Attachment entity with metadata, upload endpoint with 10 MB max size and MIME type allowlist (image/png, image/jpeg, application/pdf, text/plain), delete endpoint.
+> 3. **CSV Export & Import** (TDP 3.4) — Export active tickets as CSV, import tickets from CSV with per-row validation and summary response.
+
+### AI Model
+
+Claude Opus 4.6 (Cursor Agent mode)
+
+### Plan Summary
+
+- Dependencies use a self-referencing `@ManyToMany` with a `ticket_dependencies` join table
+- `TicketService.update()` enhanced: when transitioning to DONE, loads `blockedBy` relation and rejects if any blocker status is not DONE
+- Same-project constraint enforced when adding a dependency
+- Attachment entity stores metadata only (filename, contentType, size); file bytes discarded
+- File validation in service layer: max 10 MB, strict MIME type allowlist
+- CSV export uses `csv-stringify/sync`, import uses `csv-parse/sync` with per-row validation
+- Route ordering: `export` and `import` routes declared before `GET :ticketId` to avoid param collision
+
+### Implementation Summary
+
+#### Ticket Dependencies
+
+- **Entity**: Added `@ManyToMany(() => Ticket)` + `@JoinTable({ name: 'ticket_dependencies' })` for `blockedBy` relation on `Ticket`
+- **DTO**: `AddDependencyDto` with `@IsInt() blockedBy`
+- **Service**: `addDependency()` (validates same project), `getDependencies()`, `removeDependency()`; modified `update()` to check unresolved blockers when transitioning to DONE
+- **Controller**: 3 new endpoints matching README contract
+
+#### Attachment Management
+
+- **Entity**: `Attachment` with id, ticketId, filename, contentType, size, createdAt
+- **Service**: `upload()` validates ticket exists, file size <= 10 MB, MIME type in allowlist; `remove()` validates ownership
+- **Controller**: `FileInterceptor('file')` for upload, `ParseIntPipe` for delete
+- **Module**: `AttachmentModule` imports `TicketModule`, wired into `AppModule`
+
+#### CSV Export & Import
+
+- **Service**: `exportToCsv(projectId)` using `csv-stringify/sync`, `importFromCsv(projectId, buffer)` using `csv-parse/sync` with per-row validation
+- **Controller**: `GET /tickets/export?projectId=` sets CSV headers and sends content; `POST /tickets/import` with `FileInterceptor` and `projectId` form field
+- Both routes placed BEFORE `GET :ticketId` to avoid route collision
+
+### Files Created / Modified
+
+| File | Purpose |
+|------|---------|
+| `src/ticket/ticket.entity.ts` | Added `blockedBy` ManyToMany self-relation |
+| `src/ticket/dto/add-dependency.dto.ts` | DTO for adding a blocker dependency |
+| `src/ticket/ticket.service.ts` | Added dependency CRUD, DONE blocker guard, CSV export/import |
+| `src/ticket/ticket.controller.ts` | Added dependency, export, import endpoints |
+| `src/attachment/attachment.entity.ts` | Attachment metadata entity |
+| `src/attachment/attachment.service.ts` | Upload validation + delete |
+| `src/attachment/attachment.controller.ts` | FileInterceptor-based upload + delete |
+| `src/attachment/attachment.module.ts` | AttachmentModule wiring |
+| `src/app.module.ts` | Added AttachmentModule import |
+| `src/ticket/ticket.service.spec.ts` | Added 37 tests (dependencies, CSV, blocker guard) |
+| `src/ticket/ticket.controller.spec.ts` | Added tests for dependency, export, import endpoints |
+| `src/attachment/attachment.service.spec.ts` | 11 tests for upload validation + delete |
+| `src/attachment/attachment.controller.spec.ts` | 5 tests for controller delegation |
+
+### Verification
+
+- **TypeScript strict compilation:** `npx tsc --noEmit` — 0 errors.
+- **Unit tests:** 174 passed across 14 test suites.
+
+---
+
+## Phase 3 — Code Review & Quality Assurance
+
+### Model
+
+**Claude Opus 4.6** (Anthropic) — used via Cursor IDE agent mode.
+
+### Prompt
+
+> You are a Senior Software Architect and Backend Technical Lead performing a rigorous Code Review on Phase 3 (Tickets, Comments, Dependencies, Attachments, and CSV Export/Import) of the IssueFlow platform.
+>
+> Please review all files under `src/ticket/` and `src/comment/` against production-grade NestJS, TypeORM, and security best practices. Analyze the implementation and provide constructive feedback on the following critical vectors:
+>
+> 1. Ticket Lifecycle & Dependency Logic:
+>    - Does the `update()` status transition properly check all blocking tickets? Is the query optimal, or does it cause an N+1 query problem when evaluating if blockers are 'DONE'?
+>    - Does the same-project constraint on dependencies strictly validate both tickets before adding a blocker?
+>
+> 2. Comment Mentions & Regex Performance:
+>    - Analyze the `extractMentions` regex logic (`/\B@(\w+)/gi`). Is it safe from ReDoS (Regex Denial of Service) attacks?
+>    - When resolving mentions against the UserService, is it done using a single bulk query (e.g., `In([usernames])`), or is it executing a query in a loop (performance bottleneck)?
+>
+> 3. File Upload & Attachment Security:
+>    - Review the Attachment upload route. Is the 10MB size limit and MIME type filtering applied at the framework/middleware level (using NestJS `ParseFilePipe` or Multer filters), or is it checked manually inside the service code after the file is already fully read into memory?
+>    - Is there a risk of Path Traversal or malicious file injection through the filename?
+>
+> 4. CSV Parser Robustness (Import/Export):
+>    - Does the CSV import handle large files safely without crashing the node process (Memory Exhaustion)? Is it utilizing streams or chunked processing, or loading the entire file into an array?
+>    - How gracefully does it handle malformed rows, missing columns, or invalid enum strings? Does a single corrupt row crash the entire import transaction, or does it properly log it in the `errors` array and skip to the next row?
+>
+> 5. Type Safety & Guard Coverage:
+>    - Are the ADMIN-restricted routes (`/tickets/deleted`, `/restore`) fully protected by the `@Roles(Role.ADMIN)` decorator and enforcing the global `RolesGuard`?
+>    - Are there any loose type coercions or missing return types?
+>
+> 6. Documentation Task:
+>    - Append this interaction (this prompt, your analysis, and any remediation steps) to `prompts.md` under a clear "Phase 3 - Code Review & Quality Assurance" section.
+>
+> Highlight any critical architecture or security flaws that must be fixed before we move to Phase 4 (Auto-Escalation, Auto-Assignment, and Audit Logs).
+
+### Review Analysis
+
+#### 1. Ticket Lifecycle & Dependency Logic
+
+**Strengths:**
+- Forward-only status lifecycle enforced via `STATUS_ORDER` numeric map in `ticket-status.enum.ts` — clean, maintainable pattern.
+- DONE guard correctly loads `blockedBy` relation and filters for unresolved blockers before allowing transition.
+- Same-project constraint in `addDependency()` validates `ticket.projectId !== blocker.projectId`.
+- Both tickets are fully loaded before the dependency is created — no dangling FK risk.
+
+**Issues found:**
+- **[CRITICAL] Blocker check loads ALL blockers into memory then filters in JS.** In `ticket.service.ts:141-153`, when transitioning to DONE, the code does `relations: ['blockedBy']` which eagerly loads every blocking ticket entity, then filters with `.filter(b => b.status !== TicketStatus.DONE)`. This is an N+1 anti-pattern: if a ticket has 50 blockers, all 50 rows are fetched just to check their status. **Fix:** Use a single count query against the join table filtered by `blocker.status != 'DONE'`.
+- **[IMPORTANT] No self-referential dependency guard.** `addDependency()` does not check `ticketId !== dto.blockedBy`. A ticket can block itself, creating a permanent deadlock where the ticket can never reach DONE.
+- **[IMPORTANT] No circular dependency detection.** If ticket A blocks B and B blocks A, both are permanently stuck. While full cycle detection is expensive, at minimum the direct circular case (A blocks B, then B blocks A) should be rejected.
+- **[IMPORTANT] No duplicate dependency guard.** Calling `addDependency` twice with the same blocker pushes it to the array again. TypeORM's `@JoinTable` may silently ignore the duplicate at the DB level (unique constraint on the join table), but the in-memory array will have duplicates until the next fetch.
+
+#### 2. Comment Mentions & Regex Performance
+
+**Strengths:**
+- `extractMentions` in `mention.util.ts` is isolated as a pure function with its own spec file — excellent testability.
+- Results are deduplicated via `new Set()` and lowercased.
+- The `\B` boundary correctly prevents matching email addresses (e.g., `user@example.com`).
+- `findByUsernames()` in `user.service.ts:101-107` uses a **single bulk query** with `IN (:...usernames)` — no N+1 loop.
+
+**Issues found:**
+- **[LOW RISK] ReDoS analysis of `/\B@(\w+)/gi`.** This regex has **no nested quantifiers**, no alternation, and no overlapping groups. The `\w+` is a single greedy quantifier that advances linearly. This pattern is **safe from ReDoS**. The worst case is O(n) where n is the input length. The 5000-character `MaxLength` on comment content further bounds the input.
+- **[IMPORTANT] `findByUsernames` does case-insensitive lookup with `LOWER(user.username)`.** This applies a function on the column, which **defeats any index** on `username`. At scale, every mention resolution triggers a full table scan. **Fix:** Either store usernames in a consistent case (lowercase) and compare directly, or add a functional index: `CREATE INDEX idx_users_username_lower ON users (LOWER(username))`.
+- **[MINOR] Unresolved mentions are silently ignored.** If a user types `@nonexistent`, `findByUsernames` returns fewer results than usernames extracted. The system silently drops the mention. This is acceptable behavior but undocumented.
+
+#### 3. File Upload & Attachment Security
+
+**Strengths:**
+- Ticket existence is validated before accepting the file.
+- MIME whitelist is properly restrictive: only `image/png`, `image/jpeg`, `application/pdf`, `text/plain`.
+- Both size and MIME checks are present with clear error messages.
+- Attachment entity stores metadata only (filename, contentType, size) — no file content in DB.
+
+**Issues found:**
+- **[CRITICAL] Size and MIME validation happen AFTER the file is fully buffered in memory.** The `FileInterceptor('file')` in `attachment.controller.ts:29` uses Multer's default memory storage with **no limits configured**. Multer reads the entire file into `file.buffer` before the service's `upload()` method runs. An attacker can send a 1 GB file, and it will be fully read into Node.js memory before the `file.size > MAX_FILE_SIZE` check rejects it. **Fix:** Configure Multer `limits` and `fileFilter` directly on the `FileInterceptor` options so rejection happens during the upload stream, not after.
+- **[CRITICAL] Path traversal risk via `file.originalname`.** In `attachment.service.ts:69`, `filename: file.originalname` stores the raw filename from the client. If this filename is later used to write to disk (e.g., in Phase 4 or a future download endpoint), a value like `../../../etc/passwd` could traverse the filesystem. **Fix:** Sanitize the filename now — strip directory components and control characters using `path.basename()` and a character whitelist regex.
+- **[IMPORTANT] MIME type is client-declared, not verified.** `file.mimetype` comes from the `Content-Type` header of the multipart part — the client can claim any type. An attacker can upload an executable named `virus.png` with `Content-Type: image/png`. If the file is ever served back, this becomes an XSS or RCE vector. **Fix:** For defense-in-depth, validate magic bytes (file signature) using a library like `file-type`, or at minimum document this limitation.
+- **[MINOR]** The CSV import endpoint at `ticket.controller.ts:85` also uses `FileInterceptor` with no size limit. A multi-GB CSV could exhaust memory.
+
+#### 4. CSV Parser Robustness (Import/Export)
+
+**Strengths:**
+- Row-level error handling: invalid rows are collected in the `errors` array with row numbers, while valid rows are imported — the process does not abort on a single bad row.
+- Enum validation uses `Set` lookups against `TicketStatus`, `TicketPriority`, `TicketType` values.
+- Missing `title`/`description` detected via `?.trim()` checks.
+- DB save errors are also caught per-row with error messages.
+- `skip_empty_lines: true` and `trim: true` options on the parser.
+
+**Issues found:**
+- **[CRITICAL] `csv-parse/sync` loads the entire file into an array in memory.** In `ticket.service.ts:282`, `parse(fileBuffer, { columns: true })` parses the complete buffer synchronously into a `records` array. Combined with the unbounded `FileInterceptor` (no Multer `limits`), a large CSV (e.g. 500k rows) will create 500k objects in memory simultaneously. **Fix:** Use the streaming `csv-parse` (not `/sync`) with a transform pipeline, or at minimum enforce a file size limit on the CSV import endpoint.
+- **[IMPORTANT] Each row is saved individually with `await this.ticketRepository.save(ticket)` inside the loop.** For 1000 rows, this is 1000 separate INSERT queries + 1000 round trips. **Fix:** Batch valid rows and use `this.ticketRepository.save(validTickets)` in a single call, or at least chunk them (e.g., 100 at a time).
+- **[IMPORTANT] No transaction wrapping.** If the import succeeds for rows 1-50 but the process crashes at row 51, the first 50 rows are committed. For idempotent imports this is fine, but the client has no way to roll back a partial import. Consider wrapping in a transaction with a `rollbackOnError` option.
+- **[MINOR] `assigneeId` validation is skipped during CSV import.** The HTTP `create()` endpoint validates that the assignee exists, but `importFromCsv` directly assigns `Number(row['assigneeId'])` without checking. This could create tickets pointing to non-existent users.
+- **[MINOR] Export columns are limited to 7 fields.** `dueDate`, `isOverdue`, `createdAt`, `updatedAt` are excluded from CSV export. If a round-trip (export then re-import) is expected, data loss occurs.
+
+#### 5. Type Safety & Guard Coverage
+
+**Strengths:**
+- `@Roles(Role.ADMIN)` correctly applied to `GET /tickets/deleted` and `POST /tickets/:ticketId/restore`.
+- `RolesGuard` is registered globally via `APP_GUARD` in `app.module.ts:56` after `JwtAuthGuard` — correct ordering.
+- Guard reads `request.user.role` and throws `ForbiddenException` — clean.
+- All path params use `ParseIntPipe`.
+- All DTOs use definite assignment assertions (`!`).
+
+**Issues found:**
+- **[IMPORTANT] `DELETE /tickets/:ticketId` is not ADMIN-restricted.** Any authenticated user can soft-delete any ticket. This is inconsistent with projects where delete is presumably important. Whether this is intentional depends on requirements, but it should be explicitly decided.
+- **[IMPORTANT] No RBAC on comments or attachments.** Any authenticated user can delete any comment or attachment on any ticket, regardless of authorship or project membership. The `authorId` on comments is client-supplied, not extracted from the JWT — meaning a user can impersonate another user as a comment author.
+- **[IMPORTANT] `CreateCommentDto.authorId` is supplied by the client, not extracted from the JWT.** The authenticated user's identity (`request.user.userId`) is available from the JWT payload, but the controller accepts `authorId` from the request body. A DEVELOPER can post a comment as any user. **Fix:** Extract `authorId` from `request.user.userId` in the controller.
+- **[MINOR] `dueDate` in `UpdateTicketDto` is `string | undefined` but the service does `new Date(dto.dueDate)` without checking for `null`.** If a user wants to clear the due date, they can't — there's no way to set it back to `null`.
+
+#### 6. Test Quality Summary
+
+**Ticket service (37 tests):** Strong coverage of lifecycle rules (DONE rejection, backward rejection, same-status rejection, blocker guard for DONE, partial updates). CSV export/import tests cover valid rows, invalid rows, and mixed. Dependency tests cover same-project, cross-project, add/get/remove.
+
+**Comment service (10 tests):** Covers findByTicket, create with mentions, create without mentions, author validation, update with re-evaluated mentions, ownership check, delete.
+
+**Attachment service (11 tests):** Good coverage of size limit, MIME whitelist (each allowed type individually), no-file case, delete with ownership check.
+
+**Mention util (9 tests):** Excellent isolated unit tests for the regex, including edge cases (emails, duplicates, case, underscores, empty string).
+
+**Gaps:**
+- No test for self-referential dependency (ticket blocks itself).
+- No test for duplicate dependency addition.
+- No test for CSV import with `assigneeId` pointing to non-existent user.
+- No test for CSV import with extremely large input (memory behavior).
+- No test for attachment filename containing path traversal characters.
+- No test verifying RBAC guards actually block DEVELOPER users from admin endpoints.
+
+### Remediation Plan for Phase 4 Readiness
+
+#### Critical fixes (must complete before Phase 4):
+
+| # | Issue | Fix |
+|---|-------|-----|
+| C1 | File upload size/MIME validated after full memory read | Configure Multer `limits` and `fileFilter` on the `FileInterceptor` options in `attachment.controller.ts` and `ticket.controller.ts` so rejection happens during the upload stream |
+| C2 | CSV import uses `csv-parse/sync` — loads entire file to memory | Switch to streaming `csv-parse` or enforce a file size limit on the CSV import `FileInterceptor`; at minimum cap file size at Multer level |
+| C3 | Path traversal risk via unsanitized `file.originalname` | Sanitize filename in `attachment.service.ts` using `path.basename()` and a character whitelist regex before persisting |
+| C4 | Blocker check eagerly loads all blocked tickets into JS | Replace `relations: ['blockedBy']` + JS `.filter()` with a single `COUNT` query against the join table filtered by `blocker.status != 'DONE'` |
+
+#### Important fixes (recommended before Phase 4):
+
+| # | Issue | Fix |
+|---|-------|-----|
+| I1 | No self-referential dependency guard | Add `if (ticketId === dto.blockedBy) throw BadRequestException` at the top of `addDependency()` |
+| I2 | No circular dependency detection (direct) | Before adding A→B, check if B already blocks A via a query on the join table |
+| I3 | No duplicate dependency guard | Check `ticket.blockedBy.some(b => b.id === dto.blockedBy)` before pushing |
+| I4 | `LOWER(user.username)` defeats index | Store usernames in lowercase at creation time, or add a functional index `CREATE INDEX idx_users_username_lower ON users (LOWER(username))` |
+| I5 | CSV import saves each row individually | Batch valid rows into chunks and use `repository.save(chunk)` for bulk inserts |
+| I6 | MIME type is client-declared, not verified | Validate file magic bytes using a library like `file-type` for defense-in-depth |
+| I7 | `authorId` on comments is client-supplied | Extract `authorId` from `request.user.userId` in `CommentController` instead of accepting it from the DTO |
+| I8 | `DELETE /tickets/:ticketId` not ADMIN-restricted | Add `@Roles(Role.ADMIN)` to the delete endpoint, or document it as intentionally open |
+
+#### Minor (future improvements):
+
+| # | Issue | Fix |
+|---|-------|-----|
+| M1 | CSV import skips `assigneeId` validation | Add assignee existence check during import, or validate FK at the DB level with a constraint |
+| M2 | No way to clear `dueDate` back to null | Accept `null` as a valid value for `dueDate` in `UpdateTicketDto` and handle in service |
+| M3 | CSV export excludes `dueDate`, `createdAt`, `updatedAt` | Extend `CSV_COLUMNS` to include date fields for round-trip fidelity |
+| M4 | Unresolved `@mentions` silently ignored | Document the behavior or return a list of unresolved usernames in the response |
+| M5 | No CSV import transaction wrapping | Wrap import loop in a TypeORM transaction with rollback support |
+
+---
+
+## Phase 3 — Code Review & Quality Assurance
+
+### Prompt
+
+> Please apply the critical security, memory-safety, and performance fixes identified in the Phase 3 Code Review to our Ticket and Comment modules.
+> Ensure all changes maintain our strict TypeScript compiler settings and that all unit tests are updated accordingly.
+>
+> 1. Memory Safety & File Upload Limits (C1 & C2 Fixes)
+> 2. Path Traversal Protection (C3 Fix)
+> 3. N+1 Query Optimization for Ticket Dependencies (C4 Fix)
+> 4. Secure Comment Ownership (Important Fix)
+> 5. Testing & Documentation
+
+### AI Model
+
+Claude (Opus 4.6)
+
+### Applied Fixes
+
+#### C1 & C2 — Memory Safety & File Upload Limits
+
+| File | Change |
+|------|--------|
+| `src/attachment/attachment.controller.ts` | Replaced bare `@UploadedFile()` with `ParseFilePipe` containing `MaxFileSizeValidator` (10 MB) and `FileTypeValidator` (regex matching `image/png`, `image/jpeg`, `application/pdf`, `text/plain`). File validation now happens at the controller boundary **before** the buffer reaches the service layer. |
+| `src/attachment/attachment.service.ts` | Removed redundant service-level size & MIME checks (`MAX_FILE_SIZE`, `ALLOWED_MIME_TYPES`, and their `if` blocks). The service now trusts the pipe-validated file. |
+| `src/ticket/ticket.controller.ts` | Added `ParseFilePipe` with `FileTypeValidator` (`text/csv`) on the CSV import endpoint's `@UploadedFile()`. |
+| `src/ticket/ticket.service.ts` | Replaced synchronous `csv-parse/sync` import with the stream-based `csv-parse` module. Added a private `parseCsvStream()` method that pipes the buffer through a `Readable` stream and the `csv-parse` transform, collecting rows incrementally and rejecting on parse errors. |
+
+#### C3 — Path Traversal Protection
+
+| File | Change |
+|------|--------|
+| `src/attachment/attachment.service.ts` | Added `import * as path from 'path'`. The `upload()` method now wraps `file.originalname` with `path.basename()` before persisting, stripping sequences like `../../../etc/passwd` down to just the filename. |
+
+#### C4 — N+1 Query Optimization for Blocker Check
+
+| File | Change |
+|------|--------|
+| `src/ticket/ticket.service.ts` | Replaced the eager-load-and-filter pattern (`findOne` with `relations: ['blockedBy']` → JS `.filter()`) in the `update()` method's DONE-transition check with a single `createQueryBuilder().innerJoin('ticket_dependencies').innerJoin('tickets').where('status != DONE').getCount()` query. This executes one SQL query against the join table instead of loading all blocker entities into memory. |
+
+#### Secure Comment Ownership
+
+| File | Change |
+|------|--------|
+| `src/comment/dto/create-comment.dto.ts` | Removed the `@IsInt() authorId` property. The DTO now only contains `content`. |
+| `src/comment/comment.controller.ts` | Added `@Req() req: Request` to the `create()` method. Extracts `req.user.userId` from the JWT payload and passes it to `commentService.create()` as a separate `authorId` parameter. |
+| `src/comment/comment.service.ts` | Changed `create(ticketId, dto)` signature to `create(ticketId, authorId, dto)`. The author ID is now received from the controller (JWT-derived) rather than from the client body, preventing author spoofing. |
+
+### Testing
+
+All 14 test suites updated and passing with 170 tests:
+
+| Test file | Key updates |
+|-----------|-------------|
+| `attachment.service.spec.ts` | Removed size/MIME rejection tests (now handled by pipe). Added path-traversal sanitisation test verifying `path.basename()` strips `../` sequences. Added `NotFoundException` test for missing tickets. |
+| `attachment.controller.spec.ts` | Simplified to focus on service delegation and error propagation, since file validation is now declarative via `ParseFilePipe`. |
+| `comment.service.spec.ts` | Updated `create()` calls to pass `authorId` as a separate second argument instead of inside the DTO. |
+| `comment.controller.spec.ts` | Added `mockRequest()` helper that creates a fake `Request` with `user.userId`. Updated `create()` tests to pass `req` and verify the correct `authorId` is forwarded to the service. |
+| `ticket.service.spec.ts` | Updated blocker-check tests to mock `createQueryBuilder` chain (`innerJoin → where → getCount`) instead of `repo.findOne` with `relations: ['blockedBy']`. |
+
+### Verification
+
+- **TypeScript strict compilation**: 0 errors
+- **Unit tests**: 14 suites, 170 tests — all passing
