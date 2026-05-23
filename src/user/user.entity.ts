@@ -12,8 +12,10 @@ import { Role } from './role.enum';
  * Represents a registered user in the IssueFlow platform.
  *
  * Each user acts as the identity behind ticket assignments, comments,
- * and project ownership. The `password` column is excluded from default
- * query results and serialised responses to prevent accidental leakage.
+ * and project ownership. The `password`, `createdAt`, and `updatedAt`
+ * columns are excluded from serialised API responses via `@Exclude()`.
+ * TypeORM still uses `createdAt` internally (e.g. for auto-assignment
+ * tie-breaking by registration order).
  */
 @Entity('users')
 export class User {
@@ -50,11 +52,13 @@ export class User {
   @Column({ type: 'enum', enum: Role })
   role!: Role;
 
-  /** Timestamp of when the user record was created. */
+  /** Timestamp of when the user record was created. Excluded from API responses. */
   @CreateDateColumn()
+  @Exclude()
   createdAt!: Date;
 
-  /** Timestamp of the last update to the user record. */
+  /** Timestamp of the last update to the user record. Excluded from API responses. */
   @UpdateDateColumn()
+  @Exclude()
   updatedAt!: Date;
 }

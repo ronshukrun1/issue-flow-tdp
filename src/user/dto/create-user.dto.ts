@@ -3,22 +3,23 @@ import {
   IsEmail,
   IsEnum,
   IsNotEmpty,
+  IsOptional,
   MinLength,
   MaxLength,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Role } from '../role.enum';
 
 /**
  * Data-transfer object for creating a new user.
  *
- * All fields are mandatory. The `role` field is validated against
- * the {@link Role} enum to prevent invalid values from reaching
- * the database.
+ * The `password` field is optional. When omitted the service layer
+ * falls back to the default password `'secret'` and hashes it
+ * before storage.
  */
 export class CreateUserDto {
-  /** Unique login handle for the user (2–50 characters, trimmed). */
+  /** Unique login handle for the user (2-50 characters, trimmed). */
   @Transform(({ value }: { value: string }) => value?.trim())
   @IsString()
   @IsNotEmpty()
@@ -33,7 +34,7 @@ export class CreateUserDto {
   @MaxLength(255)
   email!: string;
 
-  /** Human-readable full name (1–100 characters, trimmed). */
+  /** Human-readable full name (1-100 characters, trimmed). */
   @Transform(({ value }: { value: string }) => value?.trim())
   @IsString()
   @IsNotEmpty()
@@ -41,12 +42,13 @@ export class CreateUserDto {
   @MaxLength(100)
   fullName!: string;
 
-  /** Plain-text password (minimum 6 characters). Hashed before storage. */
+  /** Plain-text password (minimum 6 characters). Defaults to 'secret' if omitted. */
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MinLength(6)
   @MaxLength(128)
-  password!: string;
+  password?: string;
 
   /** Must be either `ADMIN` or `DEVELOPER`. */
   @ApiProperty({ enum: Role })

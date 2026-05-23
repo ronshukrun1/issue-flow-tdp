@@ -1,12 +1,12 @@
 # IssueFlow — AI Agent Interaction Log
 
-## Model
-
-**Claude Opus 4.6** (Anthropic) — used via Cursor IDE agent mode.
-
 ---
 
 ## Phase 1 Prompt
+
+### Model
+
+**Claude Opus 4.6** (Anthropic) — used via Cursor IDE agent mode.
 
 ### Goal
 
@@ -566,6 +566,10 @@ All **23 unit tests** pass (3 test suites):
 
 ## Phase 3 — Tickets, Comments & Mentions
 
+### Model
+
+Claude Opus 4.6 (Cursor Agent mode)
+
 ### Prompt
 
 > We are starting Phase 3: Tickets Management, Comments, and Mentions APIs based on the project requirements and README.md contract. Implement the following features under strict TypeScript rules:
@@ -575,10 +579,6 @@ All **23 unit tests** pass (3 test suites):
 > 3. **Mentions Endpoint** — `GET /users/:userId/mentions` on UserController with pagination, delegating to CommentService.
 > 4. **Wire into AppModule** — Import TicketModule and CommentModule.
 > 5. **Unit Tests** — Comprehensive coverage for all new services, controllers, and the mention-parsing utility.
-
-### AI Model
-
-Claude Opus 4.6 (Cursor Agent mode)
 
 ### Plan Summary
 
@@ -661,6 +661,10 @@ Claude Opus 4.6 (Cursor Agent mode)
 
 ## Phase 3b — Dependencies, Attachments & CSV Export/Import
 
+### Model
+
+Claude Opus 4.6 (Cursor Agent mode)
+
 ### Prompt
 
 > Complete Phase 3 by implementing 3 remaining sub-features for the Ticket module:
@@ -668,10 +672,6 @@ Claude Opus 4.6 (Cursor Agent mode)
 > 1. **Ticket Dependencies** (TDP 3.2) — Self-referencing ManyToMany on Ticket for blockers, 3 endpoints (add/list/remove), same-project constraint, DONE transition guard (cannot move to DONE with unresolved blockers).
 > 2. **Attachment Management** (TDP 3.3) — Attachment entity with metadata, upload endpoint with 10 MB max size and MIME type allowlist (image/png, image/jpeg, application/pdf, text/plain), delete endpoint.
 > 3. **CSV Export & Import** (TDP 3.4) — Export active tickets as CSV, import tickets from CSV with per-row validation and summary response.
-
-### AI Model
-
-Claude Opus 4.6 (Cursor Agent mode)
 
 ### Plan Summary
 
@@ -895,7 +895,11 @@ Claude Opus 4.6 (Cursor Agent mode)
 
 ---
 
-## Phase 3 — Code Review & Quality Assurance
+## Phase 3 — Code Review Fixes Applied
+
+### Model
+
+Claude (Opus 4.6)
 
 ### Prompt
 
@@ -907,10 +911,6 @@ Claude Opus 4.6 (Cursor Agent mode)
 > 3. N+1 Query Optimization for Ticket Dependencies (C4 Fix)
 > 4. Secure Comment Ownership (Important Fix)
 > 5. Testing & Documentation
-
-### AI Model
-
-Claude (Opus 4.6)
 
 ### Applied Fixes
 
@@ -964,13 +964,13 @@ All 14 test suites updated and passing with 170 tests:
 
 ## Phase 4 — Auto-Assignment, Auto-Escalation, and Audit Logs
 
-### Prompt
-
-Implement Phase 4 features: Auto-Assignment (TDP 3.8), Auto-Escalation (TDP 3.7), Audit Logs (TDP 3.1), and a Workload API endpoint. This involved creating new modules, modifying existing services and controllers, and integrating audit logging across all state-changing operations.
-
-### AI Model
+### Model
 
 Claude Opus 4.6
+
+### Prompt
+
+> Implement Phase 4 features: Auto-Assignment (TDP 3.8), Auto-Escalation (TDP 3.7), Audit Logs (TDP 3.1), and a Workload API endpoint. This involved creating new modules, modifying existing services and controllers, and integrating audit logging across all state-changing operations.
 
 ### Implementation Summary
 
@@ -1187,9 +1187,11 @@ Each logs `performedBy: req.user.userId` with `actor: 'USER'`.
 
 ---
 
-## Phase 4 — Code Review & Quality Assurance
+## Phase 4 — Code Review Fixes Applied
 
-**AI Model:** Claude Opus 4.6 (Cursor Agent Mode)
+### Model
+
+Claude Opus 4.6 (Cursor Agent Mode)
 
 ### Prompt
 
@@ -1270,7 +1272,9 @@ All 17 test suites updated and passing (199 tests total):
 
 ## Final Comprehensive Compliance Fixes
 
-**Prompt:** "Please implement the final comprehensive fixes based on our comprehensive repo audit to ensure 100% compliance with both the TDP requirements and the README.md API contract."
+### Prompt
+
+> Please implement the final comprehensive fixes based on our comprehensive repo audit to ensure 100% compliance with both the TDP requirements and the README.md API contract.
 
 ### Changes Applied
 
@@ -1326,9 +1330,13 @@ All 17 test suites updated and passing (199 tests total):
 
 ## Final Pre-Flight Remediation Pass
 
-**Prompt:** "We are performing the absolute final remediation pass directly on our 'main' branch. Please analyze the entire codebase against README.md and TDP_issueflow_requirements.pdf to ensure a 100% airtight, production-grade submission with ZERO architectural discrepancies or missing edge cases."
+### Model
 
-**Model:** Claude Opus 4.6
+Claude Opus 4.6
+
+### Prompt
+
+> We are performing the absolute final remediation pass directly on our 'main' branch. Please analyze the entire codebase against README.md and TDP_issueflow_requirements.pdf to ensure a 100% airtight, production-grade submission with ZERO architectural discrepancies or missing edge cases.
 
 ### Changes Applied
 
@@ -1355,7 +1363,8 @@ All 17 test suites updated and passing (199 tests total):
 - **`src/attachment/attachment.controller.spec.ts`** — Rewritten with `AuditLogService` mock; tests verify audit log calls for upload and delete with correct `entityType`, `action`, and `performedBy`.
 - **`src/ticket/ticket.service.spec.ts`** — CSV import tests updated to mock `userRepo.createQueryBuilder` for auto-assign flow. Added test for skipping auto-assign when `assigneeId` is provided. Added self-blocking and duplicate dependency rejection tests.
 
-#### 7. Verification
+### Verification
+
 - `npx tsc --noEmit` — **0 errors** under strict mode.
 - `npx jest --no-cache` — **205 tests passed**, 17 suites, 0 failures.
 
@@ -1376,9 +1385,13 @@ All 17 test suites updated and passing (199 tests total):
 
 ## Logger Suppression & Integration Test Suite
 
-**Prompt:** "Suppress expected test Logger noise and implement a comprehensive full-flow integration spec."
+### Model
 
-**Model:** Claude Opus 4.6
+Claude Opus 4.6
+
+### Prompt
+
+> Suppress expected test Logger noise and implement a comprehensive full-flow integration spec.
 
 ### Changes Applied
 
@@ -1392,7 +1405,8 @@ All 17 test suites updated and passing (199 tests total):
   - **Step 3 — Comment with @Mention:** Creates a comment containing `@alice`, verifies the mention parsing engine resolves the user and populates `mentionedUsers`.
   - **Step 4 — Audit Trail Consistency:** Performs multiple state-changing operations, then asserts the audit store contains both `USER` and `SYSTEM` actor entries with correct metadata (action, entityType, performedBy).
 
-#### 3. Verification
+### Verification
+
 - `npx tsc --noEmit` — **0 errors** under strict mode.
 - `npx jest --no-cache` — **210 tests passed**, 18 suites, 0 failures, clean terminal output.
 
@@ -1428,4 +1442,159 @@ Tests:       210 passed, 210 total
 |---|---|
 | `src/audit-log/audit-log.service.spec.ts` | Logger.prototype.error spy to suppress noise |
 | `src/integration/issueflow-flow.integration.spec.ts` | New full-flow integration test (5 tests) |
+| `prompts.md` | This summary |
+
+---
+
+## Admin Seed & Optional Password
+
+### Model
+
+Claude Opus 4.6
+
+### Prompt
+
+> Please implement the initial authentication seed flow and refine the user creation logic to resolve the bootstrap deadlock. Follow these exact requirements:
+>
+> 1. **Implement Database Seeding (src/user/user.service.ts)** — Hook into NestJS application lifecycle using OnModuleInit. On startup, check if the users table is completely empty. If empty, automatically seed an initial administrator account with credentials:
+>    - username 'admin'
+>    - email 'admin@issueflow.com'
+>    - fullName 'System Admin'
+>    - role ADMIN
+>    - password 'secret' (bcrypt-hashed)
+>
+>    Log a clear system message using NestJS Logger.
+>
+> 2. **Refine User Creation Logic** — Ensure POST /users remains protected. Update the creation DTO/logic to make password optional. If provided, hash and store it. If not provided, fallback to default password 'secret', hash it, and store it. Ensure password is never leaked in responses.
+>
+> 3. **Update run.md** to document the seeded admin credentials and default password behavior.
+>
+> 4. **Verify** strict TypeScript compilation with 0 errors and all tests pass.
+
+### Changes Applied
+
+#### 1. Database Seeding via OnModuleInit
+- **`src/user/user.service.ts`** — Implemented `OnModuleInit` interface. The `onModuleInit()` method checks `userRepository.count()` on startup; if zero users exist, it seeds an admin account with:
+  - username `admin`
+  - email `admin@issueflow.com`
+  - fullName `System Admin`
+  - role `ADMIN`
+  - bcrypt-hashed password `secret`
+
+  A `Logger.log()` message confirms the seed. Added a `DEFAULT_PASSWORD` constant for the fallback value.
+
+#### 2. Optional Password in User Creation
+- **`src/user/dto/create-user.dto.ts`** — Changed `password` from required (`@IsNotEmpty()`) to optional (`@IsOptional()`), typed as `password?: string`. Added `@ApiPropertyOptional()` for Swagger documentation.
+- **`src/user/user.service.ts`** — Updated `create()` to use `dto.password ?? DEFAULT_PASSWORD` before hashing, so users created without an explicit password receive the default `'secret'`.
+
+#### 3. Documentation
+- **`run.md`** — Added an "Initial Admin Seed" section documenting the seeded credentials (`admin` / `secret`) and a note that users created via `POST /users` without a password default to `'secret'`.
+
+#### 4. Test Updates
+- **`src/user/user.service.spec.ts`** — Added `count` to the repository mock. Added three new tests:
+  - `onModuleInit` seeds an admin when the users table is empty (verifies bcrypt hash, repo.create with correct fields, repo.save).
+  - `onModuleInit` skips seeding when users already exist (verifies repo.create and repo.save are not called).
+  - `create` uses default password `'secret'` when none is provided in the DTO.
+  - Added `Logger.prototype.log` spy to suppress seed log output during tests.
+
+### Verification
+
+- `npx tsc --noEmit` — **0 errors** under strict mode.
+- `npx jest --no-cache` — **213 tests passed**, 18 suites, 0 failures.
+
+### Execution Log
+
+```
+PASS src/user/user.service.spec.ts
+PASS src/project/project.service.spec.ts
+PASS src/audit-log/audit-log.service.spec.ts
+PASS src/integration/issueflow-flow.integration.spec.ts
+PASS src/escalation/escalation.scheduler.spec.ts
+PASS src/comment/comment.service.spec.ts
+PASS src/project/project.controller.spec.ts
+PASS src/ticket/ticket.service.spec.ts
+PASS src/attachment/attachment.service.spec.ts
+PASS src/auth/auth.service.spec.ts
+PASS src/ticket/ticket.controller.spec.ts
+PASS src/comment/mention.util.spec.ts
+PASS src/app.controller.spec.ts
+PASS src/comment/comment.controller.spec.ts
+PASS src/attachment/attachment.controller.spec.ts
+PASS src/audit-log/audit-log.controller.spec.ts
+PASS src/user/user.controller.spec.ts
+PASS src/auth/auth.controller.spec.ts
+
+Test Suites: 18 passed, 18 total
+Tests:       213 passed, 213 total
+```
+
+### Files Modified
+
+| File | Change |
+|---|---|
+| `src/user/user.service.ts` | OnModuleInit seed + default password fallback |
+| `src/user/dto/create-user.dto.ts` | Password field made optional |
+| `src/user/user.service.spec.ts` | Seed tests + default password test + Logger spy |
+| `run.md` | Seeded credentials + default password documentation |
+| `prompts.md` | This summary |
+
+---
+
+## User API Response Serialization Alignment
+
+### Model
+
+Claude Opus 4.6
+
+### Prompt
+
+> We need to align the User API response format strictly with the contract specified in the README.md. Currently, the id field is missing from the output, while internal database timestamps (createdAt, updatedAt) are leaked. Please apply the @Exclude() decorator from class-transformer to the createdAt and updatedAt properties inside the User Entity so they are never exposed in API JSON responses, while remaining available internally to TypeORM for workload tie-breaking. Ensure id is properly exposed. Verify strict TypeScript compilation and that all tests pass. Update prompts.md and review run.md.
+
+### Changes Applied
+
+#### 1. User Entity Serialization Fix
+- **`src/user/user.entity.ts`** — Added `@Exclude()` decorator (from `class-transformer`) to both `createdAt` and `updatedAt` fields. The global `ClassSerializerInterceptor` (registered in `main.ts`) now strips these timestamps from all User API responses. The `id` field was already correctly exposed via `@PrimaryGeneratedColumn()` with no exclusion decorator. TypeORM continues to use `createdAt` internally for auto-assignment tie-breaking (oldest registrant first) since `@Exclude()` only affects serialization, not database queries.
+
+  **API responses now match the README contract exactly:**
+
+  ```json
+  { "id": 1, "username": "jdoe", "email": "jdoe@example.com", "fullName": "John Doe", "role": "DEVELOPER" }
+  ```
+
+### Verification
+
+- `npx tsc --noEmit` — **0 errors** under strict mode.
+- `npx jest --no-cache` — **213 tests passed**, 18 suites, 0 failures.
+
+### Execution Log
+
+```
+PASS src/user/user.service.spec.ts
+PASS src/project/project.service.spec.ts
+PASS src/comment/comment.service.spec.ts
+PASS src/escalation/escalation.scheduler.spec.ts
+PASS src/audit-log/audit-log.service.spec.ts
+PASS src/integration/issueflow-flow.integration.spec.ts
+PASS src/ticket/ticket.service.spec.ts
+PASS src/project/project.controller.spec.ts
+PASS src/ticket/ticket.controller.spec.ts
+PASS src/auth/auth.service.spec.ts
+PASS src/attachment/attachment.service.spec.ts
+PASS src/comment/mention.util.spec.ts
+PASS src/app.controller.spec.ts
+PASS src/user/user.controller.spec.ts
+PASS src/audit-log/audit-log.controller.spec.ts
+PASS src/comment/comment.controller.spec.ts
+PASS src/auth/auth.controller.spec.ts
+PASS src/attachment/attachment.controller.spec.ts
+
+Test Suites: 18 passed, 18 total
+Tests:       213 passed, 213 total
+```
+
+### Files Modified
+
+| File | Change |
+|---|---|
+| `src/user/user.entity.ts` | Added `@Exclude()` to `createdAt` and `updatedAt` |
 | `prompts.md` | This summary |

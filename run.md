@@ -72,6 +72,21 @@ npm run start:prod
 
 The server listens on **http://localhost:3000**.
 
+### Initial Admin Seed
+
+On first startup, if the `users` table is empty, the application automatically seeds an administrator account:
+
+| Field    | Value               |
+|----------|---------------------|
+| Username | `admin`             |
+| Password | `secret`            |
+| Email    | `admin@issueflow.com` |
+| Role     | `ADMIN`             |
+
+Use these credentials with `POST /auth/login` to obtain a JWT and begin creating additional users.
+
+> **Note:** Any user created via `POST /users` without an explicit `password` field will default to the password `secret`.
+
 ## 5. Swagger (OpenAPI) Documentation
 
 Once the server is running, open the interactive API documentation at:

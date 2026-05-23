@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Logger } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository, QueryFailedError } from 'typeorm';
 import { NotFoundException, ConflictException } from '@nestjs/common';
@@ -47,6 +48,15 @@ function makeQueryFailedError(code: string): QueryFailedError {
 describe('UserService', () => {
   let service: UserService;
   let repo: jest.Mocked<Repository<User>>;
+  let loggerSpy: jest.SpyInstance;
+
+  beforeAll(() => {
+    loggerSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+  });
+
+  afterAll(() => {
+    loggerSpy.mockRestore();
+  });
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -57,6 +67,7 @@ describe('UserService', () => {
           useValue: {
             find: jest.fn(),
             findOneBy: jest.fn(),
+            count: jest.fn(),
             create: jest.fn(),
             save: jest.fn(),
             remove: jest.fn(),
@@ -72,6 +83,42 @@ describe('UserService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  // ---------- onModuleInit (seed) ----------
+
+  describe('onModuleInit', () => {
+    beforeEach(() => {
+      (bcrypt.hash as jest.Mock).mockResolvedValue('hashed-secret');
+    });
+
+    it('should seed an admin when the users table is empty', async () => {
+      repo.count.mockResolvedValue(0);
+      repo.create.mockImplementation((data) => ({ id: 1, ...data }) as User);
+      repo.save.mockImplementation(async (entity) => entity as User);
+
+      await service.onModuleInit();
+
+      expect(repo.count).toHaveBeenCalled();
+      expect(bcrypt.hash).toHaveBeenCalledWith('secret', 10);
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          username: 'admin',
+          email: 'admin@issueflow.com',
+          role: Role.ADMIN,
+        }),
+      );
+      expect(repo.save).toHaveBeenCalled();
+    });
+
+    it('should skip seeding when users already exist', async () => {
+      repo.count.mockResolvedValue(5);
+
+      await service.onModuleInit();
+
+      expect(repo.create).not.toHaveBeenCalled();
+      expect(repo.save).not.toHaveBeenCalled();
+    });
   });
 
   // ---------- findAll ----------
@@ -168,7 +215,7 @@ describe('UserService', () => {
       (bcrypt.hash as jest.Mock).mockResolvedValue('hashed-password');
     });
 
-    it('should hash the password and create a new user', async () => {
+    it('should hash the provided password and create a new user', async () => {
       repo.create.mockReturnValue(mockUser);
       repo.save.mockResolvedValue(mockUser);
 
@@ -179,6 +226,20 @@ describe('UserService', () => {
         password: 'hashed-password',
       });
       expect(result).not.toHaveProperty('password');
+    });
+
+    it('should use default password when none is provided', async () => {
+      const dtoWithoutPassword: CreateUserDto = {
+        username: 'newuser',
+        email: 'new@example.com',
+        fullName: 'New User',
+        role: Role.DEVELOPER,
+      };
+      repo.create.mockReturnValue(mockUser);
+      repo.save.mockResolvedValue(mockUser);
+
+      await service.create(dtoWithoutPassword);
+      expect(bcrypt.hash).toHaveBeenCalledWith('secret', 10);
     });
 
     it('should throw ConflictException on duplicate username/email', async () => {

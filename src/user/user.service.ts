@@ -1,7 +1,9 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   ConflictException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, QueryFailedError, In } from 'typeorm';
@@ -9,6 +11,7 @@ import * as bcrypt from 'bcrypt';
 import { User } from './user.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { Role } from './role.enum';
 
 /** Shape of the PostgreSQL driver error embedded inside QueryFailedError. */
 interface PostgresDriverError {
@@ -17,6 +20,9 @@ interface PostgresDriverError {
 
 /** Number of salt rounds used by bcrypt when hashing passwords. */
 const BCRYPT_SALT_ROUNDS = 10;
+
+/** Default password assigned when none is provided in CreateUserDto. */
+const DEFAULT_PASSWORD = 'secret';
 
 /**
  * Type guard that checks whether a caught error is a TypeORM
@@ -36,16 +42,38 @@ function isQueryFailedWithCode(
 /**
  * Encapsulates all business logic for user management.
  *
- * Delegates persistence to TypeORM's {@link Repository} and translates
- * database-level errors (e.g. unique-constraint violations) into
- * meaningful HTTP exceptions.
+ * Implements {@link OnModuleInit} to seed an initial admin account
+ * when the users table is empty, resolving the bootstrap deadlock
+ * where `POST /users` is admin-protected but no admin exists yet.
  */
 @Injectable()
-export class UserService {
+export class UserService implements OnModuleInit {
+  private readonly logger = new Logger(UserService.name);
+
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
   ) {}
+
+  /**
+   * Seeds an initial administrator when the users table is empty.
+   * Runs automatically on application startup.
+   */
+  async onModuleInit(): Promise<void> {
+    const count = await this.userRepository.count();
+    if (count > 0) return;
+
+    const hashedPassword = await bcrypt.hash(DEFAULT_PASSWORD, BCRYPT_SALT_ROUNDS);
+    const admin = this.userRepository.create({
+      username: 'admin',
+      email: 'admin@issueflow.com',
+      fullName: 'System Admin',
+      role: Role.ADMIN,
+      password: hashedPassword,
+    });
+    await this.userRepository.save(admin);
+    this.logger.log('Seeded initial admin account (username: admin)');
+  }
 
   /**
    * Retrieves every user record in the system.
@@ -109,23 +137,27 @@ export class UserService {
   /**
    * Creates and persists a new user after hashing their password.
    *
-   * @param dto - Validated creation payload (plain-text password).
+   * When `dto.password` is omitted the default password (`'secret'`)
+   * is used. The hash is never returned in the response.
+   *
+   * @param dto - Validated creation payload.
    * @returns The newly persisted {@link User} entity (password excluded from response).
    * @throws {ConflictException} When the username or email already exists (HTTP 409).
    */
   async create(dto: CreateUserDto): Promise<User> {
     try {
+      const plainPassword = dto.password ?? DEFAULT_PASSWORD;
       const hashedPassword = await bcrypt.hash(
-        dto.password,
+        plainPassword,
         BCRYPT_SALT_ROUNDS,
       );
+      const { password: _plain, ...userFields } = dto;
       const user = this.userRepository.create({
-        ...dto,
+        ...userFields,
         password: hashedPassword,
       });
       const saved = await this.userRepository.save(user);
 
-      // Strip password from the returned object
       const { password: _, ...result } = saved as User & { password: string };
       return result as User;
     } catch (error: unknown) {
