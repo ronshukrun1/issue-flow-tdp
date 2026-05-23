@@ -109,7 +109,10 @@ export class TicketController {
     @UploadedFile(
       new ParseFilePipe({
         validators: [
-          new FileTypeValidator({ fileType: /^text\/csv$/ }),
+          new FileTypeValidator({
+            fileType: /^text\/csv$/,
+            skipMagicNumbersValidation: true,
+          }),
         ],
       }),
     )
