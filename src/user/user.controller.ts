@@ -18,8 +18,6 @@ import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { User } from './user.entity';
-import { Roles } from '../common/decorators/roles.decorator';
-import { Role } from './role.enum';
 import { CommentService } from '../comment/comment.service';
 import { Comment } from '../comment/comment.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
@@ -29,8 +27,8 @@ import { AuditAction } from '../audit-log/enums/audit-action.enum';
  * Handles all HTTP requests for the `/users` resource.
  *
  * Each endpoint maps directly to the Users API contract defined in
- * the project README. User creation and destructive operations are
- * restricted to administrators.
+ * the project README. All endpoints are protected by the global
+ * `JwtAuthGuard` and accessible to any authenticated user.
  */
 @ApiTags('Users')
 @ApiBearerAuth()
@@ -73,10 +71,7 @@ export class UserController {
 
   /**
    * `POST /users` — creates (registers) a new user.
-   *
-   * Restricted to ADMIN users to prevent anonymous privilege escalation.
    */
-  @Roles(Role.ADMIN)
   @Post()
   @HttpCode(HttpStatus.OK)
   async create(
@@ -96,10 +91,7 @@ export class UserController {
 
   /**
    * `POST /users/update/:userId` — updates mutable fields of an existing user.
-   *
-   * Restricted to ADMIN users.
    */
-  @Roles(Role.ADMIN)
   @Post('update/:userId')
   @HttpCode(HttpStatus.OK)
   async update(
@@ -120,10 +112,7 @@ export class UserController {
 
   /**
    * `DELETE /users/:userId` — permanently removes a user.
-   *
-   * Restricted to ADMIN users.
    */
-  @Roles(Role.ADMIN)
   @Delete(':userId')
   async remove(
     @Param('userId', ParseIntPipe) userId: number,
