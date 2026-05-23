@@ -9,6 +9,8 @@ import {
   Req,
   ParseIntPipe,
   DefaultValuePipe,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { Request } from 'express';
@@ -76,6 +78,7 @@ export class UserController {
    */
   @Roles(Role.ADMIN)
   @Post()
+  @HttpCode(HttpStatus.OK)
   async create(
     @Body() dto: CreateUserDto,
     @Req() req: Request,
@@ -98,6 +101,7 @@ export class UserController {
    */
   @Roles(Role.ADMIN)
   @Post('update/:userId')
+  @HttpCode(HttpStatus.OK)
   async update(
     @Param('userId', ParseIntPipe) userId: number,
     @Body() dto: UpdateUserDto,

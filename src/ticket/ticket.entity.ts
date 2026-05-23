@@ -11,6 +11,7 @@ import {
   JoinColumn,
   JoinTable,
 } from 'typeorm';
+import { Exclude } from 'class-transformer';
 import { Project } from '../project/project.entity';
 import { User } from '../user/user.entity';
 import { TicketStatus } from './enums/ticket-status.enum';
@@ -23,6 +24,10 @@ import { TicketType } from './enums/ticket-type.enum';
  * Tickets support soft-delete via `@DeleteDateColumn` and carry an
  * `isOverdue` flag that the auto-escalation scheduler can set when
  * a ticket's `dueDate` has passed.
+ *
+ * Internal fields (`version`, `createdAt`, `updatedAt`, `deletedAt`)
+ * and navigation properties are excluded from serialised API responses
+ * via `@Exclude()` to match the README contract.
  */
 @Entity('tickets')
 export class Ticket {
@@ -49,6 +54,7 @@ export class Ticket {
 
   @ManyToOne(() => Project, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'projectId' })
+  @Exclude()
   project!: Project;
 
   @Column({ nullable: true, type: 'int' })
@@ -56,6 +62,7 @@ export class Ticket {
 
   @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'assigneeId' })
+  @Exclude()
   assignee!: User | null;
 
   @Column({ nullable: true, type: 'timestamptz' })
@@ -75,18 +82,23 @@ export class Ticket {
     joinColumn: { name: 'ticketId', referencedColumnName: 'id' },
     inverseJoinColumn: { name: 'blockedById', referencedColumnName: 'id' },
   })
+  @Exclude()
   blockedBy!: Ticket[];
 
   /** Optimistic lock version — prevents simultaneous edits (TDP 2.4). */
   @VersionColumn()
+  @Exclude()
   version!: number;
 
   @CreateDateColumn()
+  @Exclude()
   createdAt!: Date;
 
   @UpdateDateColumn()
+  @Exclude()
   updatedAt!: Date;
 
   @DeleteDateColumn()
+  @Exclude()
   deletedAt!: Date | null;
 }

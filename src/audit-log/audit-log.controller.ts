@@ -29,9 +29,10 @@ export class AuditLogController {
     @Query('action') action?: string,
     @Query('actor') actor?: string,
   ): Promise<AuditLog[]> {
+    const parsedId = entityId !== undefined ? parseInt(entityId, 10) : undefined;
     return this.auditLogService.findAll({
       entityType,
-      entityId: entityId ? Number(entityId) : undefined,
+      entityId: parsedId !== undefined && !isNaN(parsedId) ? parsedId : undefined,
       action,
       actor,
     });

@@ -99,14 +99,14 @@ describe('AuthController', () => {
       const req = mockRequest('my-jwt-token');
       const result = controller.logout(req);
       expect(service.revokeToken).toHaveBeenCalledWith('my-jwt-token');
-      expect(result).toEqual({ message: 'Logged out successfully' });
+      expect(result).toBeUndefined();
     });
 
     it('should handle missing authorization header gracefully', () => {
       const req = { headers: {}, user: { userId: 1 } } as unknown as Request;
       const result = controller.logout(req);
       expect(service.revokeToken).not.toHaveBeenCalled();
-      expect(result).toEqual({ message: 'Logged out successfully' });
+      expect(result).toBeUndefined();
     });
   });
 });

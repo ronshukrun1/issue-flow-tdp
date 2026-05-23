@@ -8,6 +8,8 @@ import {
   Body,
   Req,
   ParseIntPipe,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { Request } from 'express';
@@ -51,6 +53,7 @@ export class CommentController {
    * `@username` mentions. The author is the authenticated user.
    */
   @Post()
+  @HttpCode(HttpStatus.OK)
   async create(
     @Param('ticketId', ParseIntPipe) ticketId: number,
     @Body() dto: CreateCommentDto,

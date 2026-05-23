@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Body, Req } from '@nestjs/common';
+import { Controller, Post, Get, Body, Req, HttpCode, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { Request } from 'express';
 import { AuthService } from './auth.service';
@@ -21,6 +21,7 @@ export class AuthController {
    */
   @Public()
   @Post('login')
+  @HttpCode(HttpStatus.OK)
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
   }
@@ -44,12 +45,12 @@ export class AuthController {
    * adds it to the server-side revocation registry (TDP 2.2).
    */
   @Post('logout')
-  logout(@Req() req: Request): { message: string } {
+  @HttpCode(HttpStatus.OK)
+  logout(@Req() req: Request): void {
     const authHeader = req.headers.authorization;
     if (authHeader) {
       const token = authHeader.replace(/^Bearer\s+/i, '');
       this.authService.revokeToken(token);
     }
-    return { message: 'Logged out successfully' };
   }
 }

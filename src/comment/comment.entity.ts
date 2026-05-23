@@ -10,6 +10,7 @@ import {
   JoinColumn,
   JoinTable,
 } from 'typeorm';
+import { Exclude } from 'class-transformer';
 import { Ticket } from '../ticket/ticket.entity';
 import { User } from '../user/user.entity';
 
@@ -19,6 +20,10 @@ import { User } from '../user/user.entity';
  * Comments track `@username` mentions via a many-to-many join table
  * (`comment_mentions`). The mention list is re-evaluated on every
  * create and update.
+ *
+ * Internal fields (`version`, `createdAt`, `updatedAt`) and
+ * navigation properties are excluded from serialised API responses
+ * via `@Exclude()` to match the README contract.
  */
 @Entity('comments')
 export class Comment {
@@ -30,6 +35,7 @@ export class Comment {
 
   @ManyToOne(() => Ticket, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'ticketId' })
+  @Exclude()
   ticket!: Ticket;
 
   @Column()
@@ -37,6 +43,7 @@ export class Comment {
 
   @ManyToOne(() => User, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'authorId' })
+  @Exclude()
   author!: User;
 
   @Column({ type: 'text' })
@@ -44,8 +51,8 @@ export class Comment {
 
   /**
    * Users mentioned via `@username` in the comment content.
-   * Eagerly populated in comment responses with `id`, `username`,
-   * and `fullName` only.
+   * Populated in comment responses with `id`, `username`,
+   * and `fullName`.
    */
   @ManyToMany(() => User)
   @JoinTable({ name: 'comment_mentions' })
@@ -53,11 +60,14 @@ export class Comment {
 
   /** Optimistic lock version — prevents simultaneous edits (TDP 2.5). */
   @VersionColumn()
+  @Exclude()
   version!: number;
 
   @CreateDateColumn()
+  @Exclude()
   createdAt!: Date;
 
   @UpdateDateColumn()
+  @Exclude()
   updatedAt!: Date;
 }

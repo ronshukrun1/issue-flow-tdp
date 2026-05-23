@@ -1598,3 +1598,513 @@ Tests:       213 passed, 213 total
 |---|---|
 | `src/user/user.entity.ts` | Added `@Exclude()` to `createdAt` and `updatedAt` |
 | `prompts.md` | This summary |
+
+---
+
+## Fix User Create Serialization Leak
+
+**Prompt:** "The POST /users endpoint is still leaking createdAt and updatedAt fields in its JSON response. We need to ensure strict, uniform serialization across ALL user endpoints (POST, GET, PATCH) to match the contract specified in the README exactly. Ensure ClassSerializerInterceptor is active and that TypeORM's raw return object from .save() in the create method is properly handled so @Exclude() properties are stripped. Verify all 213 tests pass. Update prompts.md."
+
+**Model:** Claude Opus 4.6
+
+### Root Cause
+
+`UserService.create()` manually stripped the password via object destructuring:
+
+```typescript
+const { password: _, ...result } = saved as User & { password: string };
+return result as User;
+```
+
+The spread operator produces a plain JavaScript object (POJO), not a `User` class instance. The global `ClassSerializerInterceptor` relies on `class-transformer`'s `instanceToPlain()`, which only processes `@Exclude()` decorators on class instances. Since the spread created a POJO, `createdAt` and `updatedAt` bypassed exclusion.
+
+Other endpoints (`findAll`, `findOne`, `update`) returned proper `User` entity instances from the repository, so `@Exclude()` worked correctly for them.
+
+### Fix Applied
+
+#### 1. UserService.create() Re-fetch Pattern
+- **`src/user/user.service.ts`** — Replaced the manual destructure with a `findOneByOrFail` re-fetch after save:
+
+```typescript
+const saved = await this.userRepository.save(user);
+return this.userRepository.findOneByOrFail({ id: saved.id });
+```
+
+This returns a proper `User` class instance where:
+- `password` is excluded at the SQL level via `select: false`
+- `@Exclude()` on `createdAt` and `updatedAt` is honoured by the interceptor
+- No manual field stripping needed
+
+#### 2. Test Updates
+- **`src/user/user.service.spec.ts`** — Added `findOneByOrFail` to the repository mock object. Updated the create test to mock the re-fetch returning a user without password, and added assertion verifying `findOneByOrFail` is called with the correct `id`.
+
+### Verification
+- `npx tsc --noEmit` — **0 errors** under strict mode.
+- `npx jest --no-cache` — **213 tests passed**, 18 suites, 0 failures.
+
+### Execution Log
+
+```
+PASS src/user/user.service.spec.ts
+PASS src/project/project.service.spec.ts
+PASS src/comment/comment.service.spec.ts
+PASS src/escalation/escalation.scheduler.spec.ts
+PASS src/ticket/ticket.service.spec.ts
+PASS src/integration/issueflow-flow.integration.spec.ts
+PASS src/audit-log/audit-log.service.spec.ts
+PASS src/auth/auth.service.spec.ts
+PASS src/project/project.controller.spec.ts
+PASS src/ticket/ticket.controller.spec.ts
+PASS src/comment/mention.util.spec.ts
+PASS src/attachment/attachment.service.spec.ts
+PASS src/user/user.controller.spec.ts
+PASS src/audit-log/audit-log.controller.spec.ts
+PASS src/app.controller.spec.ts
+PASS src/comment/comment.controller.spec.ts
+PASS src/auth/auth.controller.spec.ts
+PASS src/attachment/attachment.controller.spec.ts
+
+Test Suites: 18 passed, 18 total
+Tests:       213 passed, 213 total
+```
+
+### Files Modified
+
+| File | Change |
+|---|---|
+| `src/user/user.service.ts` | Replaced POJO destructure with `findOneByOrFail` re-fetch |
+| `src/user/user.service.spec.ts` | Added `findOneByOrFail` mock + updated create test assertions |
+| `prompts.md` | This summary |
+
+---
+
+## Comprehensive Code Review — Serialization Compliance
+
+### Model
+
+**Claude Opus 4.6** (Anthropic) — used via Cursor IDE agent mode.
+
+### Prompt
+
+> You are an expert Senior Backend Engineer and Technical Reviewer. Your task is to perform a rigorous, comprehensive Code Review on our NestJS + TypeORM backend platform to verify 100% compliance with the provided specifications (README.md & TDP\_issueflow\_requirements.pdf).
+>
+> Please read the README.md contract tables, the functional constraints in the PDF, and review the existing codebase thoroughly to identify any gaps, architectural flaws, input validation issues, or compliance deviations.
+>
+> Execute this assignment in the following stages:
+>
+> 1. **CR ANALYSIS REPORT** — Compliance, Constraints & Lifecycles, Input Validation, Security & RBAC.
+> 2. **AUTOMATED CORE IMPLEMENTATION & FIXES** — Refactor files where discrepancies or unhandled edge cases are found. Ensure all serialization formats expose `id` while stripping internal timestamps.
+> 3. **VERIFICATION** — `npx tsc --noEmit` (0 errors) and `npm run test` (all 213 tests green).
+> 4. **DOCUMENTATION LOGS** — Update `prompts.md`.
+
+### CR Analysis Report
+
+#### Compliance (API endpoints, strict response shapes)
+
+| Finding | Severity | Description |
+|---------|----------|-------------|
+| **CRIT-01: Ticket entity leaks internal fields** | HIGH | `createdAt`, `updatedAt`, `deletedAt`, `version`, `project`, `assignee`, `blockedBy` all serialise into JSON responses. README contract only specifies: `id`, `title`, `description`, `status`, `priority`, `type`, `projectId`, `assigneeId`, `dueDate`, `isOverdue`. |
+| **CRIT-02: Project entity leaks internal fields** | HIGH | `createdAt`, `updatedAt`, `deletedAt`, `owner` leak into responses. Contract specifies: `id`, `name`, `description`, `ownerId`. |
+| **CRIT-03: Comment entity leaks internal fields** | HIGH | `createdAt`, `updatedAt`, `version`, `ticket`, `author` leak. Contract specifies: `id`, `ticketId`, `authorId`, `content`, `mentionedUsers`. |
+| **CRIT-04: Attachment entity leaks internal fields** | MEDIUM | `createdAt`, `size`, `ticket` leak. Contract specifies: `id`, `ticketId`, `filename`, `contentType`. |
+| **CRIT-05: AuditLog entity leaks performer relation** | LOW | `performer` navigation property could leak if eagerly loaded. |
+
+#### Constraints & Lifecycles
+
+| Check | Result |
+|-------|--------|
+| Forward-only status transitions (`TODO→IN_PROGRESS→IN_REVIEW→DONE`) | ✅ PASS |
+| DONE tickets cannot be edited | ✅ PASS |
+| Same-status transitions rejected | ✅ PASS |
+| Unresolved blockers prevent DONE transition | ✅ PASS |
+| Optimistic locking on Ticket and Comment | ✅ PASS |
+| Auto-assignment tie-breaker by registration order | ✅ PASS |
+| Auto-escalation idempotent at CRITICAL | ✅ PASS |
+| Manual priority change resets `isOverdue` | ✅ PASS |
+| Self-blocking rejected | ✅ PASS |
+| Cross-project dependency rejected | ✅ PASS |
+| Duplicate dependency rejected | ✅ PASS |
+
+#### Input Validation & Errors
+
+| Check | Result |
+|-------|--------|
+| Global `ValidationPipe` with `whitelist`, `forbidNonWhitelisted`, `transform` | ✅ PASS |
+| DTOs enforce type, length, and enum constraints | ✅ PASS |
+| Informative error messages for 400/404/409 responses | ✅ PASS |
+| Attachment 10MB size limit and MIME type validation | ✅ PASS |
+| CSV import validates row-level fields and collects errors | ✅ PASS |
+
+#### Security & RBAC
+
+| Check | Result |
+|-------|--------|
+| Global `JwtAuthGuard` with `@Public()` bypass | ✅ PASS |
+| Global `RolesGuard` enforcing `@Roles()` | ✅ PASS |
+| ADMIN-only: user CRUD, soft-delete listing, restore | ✅ PASS |
+| Token revocation via in-memory deny-list | ✅ PASS |
+| Password: bcrypt hash, `select: false`, `@Exclude()` | ✅ PASS |
+
+### Fixes Applied
+
+Added `@Exclude()` decorators (from `class-transformer`) to all entity fields that must not appear in API responses. The global `ClassSerializerInterceptor` (registered in `main.ts`) honours these decorators automatically, stripping internal timestamps, version columns, and navigation-only relations from every JSON response.
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `src/ticket/ticket.entity.ts` | Added `@Exclude()` to `project`, `assignee`, `blockedBy`, `version`, `createdAt`, `updatedAt`, `deletedAt`; added `class-transformer` import |
+| `src/project/project.entity.ts` | Added `@Exclude()` to `owner`, `createdAt`, `updatedAt`, `deletedAt`; added `class-transformer` import |
+| `src/comment/comment.entity.ts` | Added `@Exclude()` to `ticket`, `author`, `version`, `createdAt`, `updatedAt`; added `class-transformer` import |
+| `src/attachment/attachment.entity.ts` | Added `@Exclude()` to `ticket`, `size`, `createdAt`; added `class-transformer` import |
+| `src/audit-log/audit-log.entity.ts` | Added `@Exclude()` to `performer`; added `class-transformer` import |
+| `prompts.md` | This CR summary |
+
+### Verification Logs
+
+#### TypeScript Compilation (`npx tsc --noEmit`)
+
+```
+Exit code: 0
+(no errors)
+```
+
+#### Test Suite (`npm run test`)
+
+```
+PASS src/project/project.service.spec.ts
+PASS src/user/user.service.spec.ts
+PASS src/comment/comment.service.spec.ts
+PASS src/integration/issueflow-flow.integration.spec.ts
+PASS src/comment/comment.controller.spec.ts
+PASS src/user/user.controller.spec.ts
+PASS src/project/project.controller.spec.ts
+PASS src/ticket/ticket.service.spec.ts
+PASS src/ticket/ticket.controller.spec.ts
+PASS src/attachment/attachment.service.spec.ts
+PASS src/audit-log/audit-log.service.spec.ts
+PASS src/escalation/escalation.scheduler.spec.ts
+PASS src/comment/mention.util.spec.ts
+PASS src/attachment/attachment.controller.spec.ts
+PASS src/auth/auth.service.spec.ts
+PASS src/app.controller.spec.ts
+PASS src/auth/auth.controller.spec.ts
+PASS src/audit-log/audit-log.controller.spec.ts
+
+Test Suites: 18 passed, 18 total
+Tests:       213 passed, 213 total
+Snapshots:   0 total
+```
+
+---
+
+## Full-Platform Code Review — README & TDP Compliance Audit
+
+### Model
+
+**Claude Opus 4.6** (Anthropic) — used via Cursor IDE agent mode.
+
+### Prompt
+
+> You are an expert Senior Backend Engineer and Technical Reviewer. Your task is to perform a rigorous, comprehensive Code Review on our NestJS + TypeORM backend platform to verify 100% compliance with the provided specifications (README.md & TDP\_issueflow\_requirements.pdf).
+>
+> Please read the README.md contract tables, the functional constraints in the PDF, and review the existing codebase thoroughly to identify any gaps, architectural flaws, input validation issues, or compliance deviations.
+>
+> Execute this assignment in the following stages:
+>
+> 1. **[CR ANALYSIS REPORT]:**
+>    - Provide a concise summary of your findings categorized by:
+>      - Compliance (API endpoints, strict request/response data types matching tables).
+>      - Constraints & Lifecycles (Verify ticket status transitions cannot move backward, DONE tickets cannot be edited, workload tie-breakers function correctly).
+>      - Input Validation & Errors (Verify invalid inputs are caught, clear informative error handling is returned).
+>      - Security & RBAC (Verify global JWT protections and strict ADMIN/DEVELOPER access control rules).
+>
+> 2. **[AUTOMATED CORE IMPLEMENTATION & FIXES]:**
+>    - Refactor and update any relevant files across controllers, services, entities, or DTOs where discrepancies or unhandled edge cases are found.
+>    - Maintain the exact styling guidelines, naming conventions, structural formatting, and clean patterns established in the project.
+>    - Ensure all serialization formats across all entities cleanly expose their `id` while completely stripping internal database operational timestamps from JSON representations.
+>
+> 3. **[VERIFICATION]:**
+>    - Run a strict TypeScript compilation check (`npx tsc --noEmit`) to verify 0 errors.
+>    - Execute the entire test suite (`npm run test`) to confirm that all 213 existing tests remain completely green alongside your fixes.
+>
+> 4. **[DOCUMENTATION LOGS]:**
+>    - Update prompts.md to cleanly document this exact CR prompt, a breakdown of the specific files you modified, and the final green verification logs showing all tests passed.
+>
+> *This is a read-only Code Review. Do NOT modify, refactor, or write any code in our files yet. Provide the analysis report only!*
+
+### CR Analysis Report
+
+#### 1. Compliance — API Endpoints & Response Shapes
+
+##### 1.1 CRITICAL — All POST Endpoints Return HTTP 201 Instead of 200
+
+NestJS `@Post()` defaults to HTTP 201 Created. The README contract specifies **200 OK** for every endpoint. None of the 12 POST handlers have a `@HttpCode(200)` decorator.
+
+| # | Endpoint | Current | Required |
+|---|----------|---------|----------|
+| 1 | `POST /auth/login` | 201 | 200 |
+| 2 | `POST /auth/logout` | 201 | 200 |
+| 3 | `POST /users` | 201 | 200 |
+| 4 | `POST /users/update/:userId` | 201 | 200 |
+| 5 | `POST /projects` | 201 | 200 |
+| 6 | `POST /projects/:projectId/restore` | 201 | 200 |
+| 7 | `POST /tickets` | 201 | 200 |
+| 8 | `POST /tickets/import` | 201 | 200 |
+| 9 | `POST /tickets/:ticketId/restore` | 201 | 200 |
+| 10 | `POST /tickets/:ticketId/dependencies` | 201 | 200 |
+| 11 | `POST /tickets/:ticketId/comments` | 201 | 200 |
+| 12 | `POST /tickets/:ticketId/attachments` | 201 | 200 |
+
+**Fix:** Add `@HttpCode(HttpStatus.OK)` to every `@Post()` handler across all 6 controller files.
+
+##### 1.2 HIGH — Dependencies Response Shape Over-exposes Fields
+
+The README contract for `GET /tickets/:ticketId/dependencies` specifies a minimal response:
+
+```json
+[{ "id": 42, "title": "Blocking ticket", "status": "IN_PROGRESS" }]
+```
+
+The implementation returns full `Ticket` entities. After serialization, each blocker object exposes: `id`, `title`, `description`, `status`, `priority`, `type`, `projectId`, `assigneeId`, `dueDate`, `isOverdue` — 7 extra fields beyond the contract.
+
+##### 1.3 MEDIUM — MentionedUsers Expose Extra Fields
+
+The README contract for `mentionedUsers` specifies:
+
+```json
+[{ "id": 1, "username": "jdoe", "fullName": "John Doe" }]
+```
+
+Since `mentionedUsers` is a relation to the `User` entity, the serialized output includes `email` and `role` (only `password`, `createdAt`, `updatedAt` are excluded via `@Exclude()`). Two extra fields beyond the contract.
+
+##### 1.4 Endpoints Fully Compliant (Verified)
+
+All remaining endpoint routes, HTTP methods, path parameters, query parameters, and body DTOs match the README contract:
+
+- **Users:** `GET /users`, `GET /users/:userId`, `POST /users`, `POST /users/update/:userId`, `DELETE /users/:userId`
+- **Auth:** `POST /auth/login` (response shape `{ accessToken, tokenType, expiresIn }`), `POST /auth/logout`, `GET /auth/me`
+- **Projects:** `GET /projects`, `GET /projects/:projectId`, `POST /projects`, `PATCH /projects/:projectId`, `DELETE /projects/:projectId`
+- **Tickets:** `GET /tickets?projectId=`, `GET /tickets/:ticketId`, `POST /tickets`, `PATCH /tickets/:ticketId`, `DELETE /tickets/:ticketId`
+- **Export/Import:** `GET /tickets/export?projectId=` (CSV with correct Content-Type headers), `POST /tickets/import`
+- **Comments:** `GET /tickets/:ticketId/comments`, `POST /tickets/:ticketId/comments`, `PATCH /tickets/:ticketId/comments/:commentId`, `DELETE /tickets/:ticketId/comments/:commentId`
+- **Audit Logs:** `GET /audit-logs` with optional query filters (`entityType`, `entityId`, `action`, `actor`)
+- **Attachments:** `POST /tickets/:ticketId/attachments`, `DELETE /tickets/:ticketId/attachments/:attachmentId`
+- **Soft Delete:** `GET /tickets/deleted`, `POST /tickets/:ticketId/restore`, `GET /projects/deleted`, `POST /projects/:projectId/restore`
+- **Mentions:** `GET /users/:userId/mentions` with pagination (`page`, `pageSize`)
+- **Workload:** `GET /projects/:projectId/workload`
+
+##### 1.5 Entity Serialization Compliance
+
+| Entity | `id` exposed | Internal timestamps stripped | Status |
+|--------|-------------|------------------------------|--------|
+| User | `@PrimaryGeneratedColumn()` | `createdAt`, `updatedAt` both `@Exclude()` | PASS |
+| Project | `@PrimaryGeneratedColumn()` | `createdAt`, `updatedAt`, `deletedAt` all `@Exclude()` | PASS |
+| Ticket | `@PrimaryGeneratedColumn()` | `createdAt`, `updatedAt`, `deletedAt`, `version` all `@Exclude()` | PASS |
+| Comment | `@PrimaryGeneratedColumn()` | `createdAt`, `updatedAt`, `version` all `@Exclude()` | PASS |
+| Attachment | `@PrimaryGeneratedColumn()` | `createdAt`, `size` both `@Exclude()` | PASS |
+| AuditLog | `@PrimaryGeneratedColumn()` | `timestamp` correctly NOT excluded (part of contract) | PASS |
+
+---
+
+#### 2. Constraints & Lifecycles
+
+| Check | Result | Notes |
+|-------|--------|-------|
+| Forward-only status transitions (`TODO` -> `IN_PROGRESS` -> `IN_REVIEW` -> `DONE`) | PASS | `STATUS_ORDER` numeric map with `newOrder <= currentOrder` rejection |
+| DONE tickets cannot be updated | PASS | Early guard in `TicketService.update()` throws `BadRequestException` |
+| Unresolved blockers prevent DONE transition | PASS | Single `COUNT` query against `ticket_dependencies` join table |
+| Optimistic locking on Ticket (`@VersionColumn`) | PASS | `OptimisticLockVersionMismatchError` caught and returned as `ConflictException` (409) |
+| Optimistic locking on Comment (`@VersionColumn`) | PASS | Same pattern as Ticket |
+| Auto-assignment selects least-loaded DEVELOPER | PASS | Single aggregate SQL query with `LEFT JOIN` + `COUNT` + `GROUP BY` + `ORDER BY` + `LIMIT 1` |
+| Auto-assignment tie-breaker by registration order | PASS | `user.createdAt ASC` as secondary sort |
+| Auto-assignment only triggers on creation (not update) | PASS | No auto-assign logic in `update()` |
+| Auto-assignment audit logged with `actor: 'SYSTEM'` | PASS | `AuditAction.AUTO_ASSIGN`, `performedBy: null` |
+| Auto-escalation promotes priority one level | PASS | `nextPriority()` helper: `LOW` -> `MEDIUM` -> `HIGH` -> `CRITICAL` |
+| Auto-escalation sets `isOverdue = true` at CRITICAL | PASS | Scheduler checks and sets flag |
+| Auto-escalation idempotent at CRITICAL + isOverdue | PASS | Already-flagged tickets are skipped |
+| Manual priority change resets `isOverdue` | PASS | `ticket.isOverdue = false` when `dto.priority !== undefined` |
+| Self-blocking dependency rejected | PASS | `if (ticketId === dto.blockedBy) throw BadRequestException` |
+| Cross-project dependency rejected | PASS | `ticket.projectId !== blocker.projectId` check |
+| Duplicate dependency rejected | PASS | `ticket.blockedBy.some(b => b.id === dto.blockedBy)` check |
+| Dependencies same-project constraint | PASS | Both tickets loaded and `projectId` compared before adding |
+
+**Edge case gap found:**
+
+| Finding | Severity | Description |
+|---------|----------|-------------|
+| Cannot clear `dueDate` to null | MEDIUM | `UpdateTicketDto` validates `dueDate` with `@IsDateString()` which rejects `null`. Once set, `dueDate` cannot be reset to null via PATCH. |
+
+---
+
+#### 3. Input Validation & Errors
+
+| Check | Result | Notes |
+|-------|--------|-------|
+| Global `ValidationPipe` (whitelist, forbidNonWhitelisted, transform) | PASS | Configured in `main.ts` |
+| All DTOs enforce type, length, and enum constraints | PASS | `@IsEnum`, `@MinLength`, `@MaxLength`, `@IsInt`, `@IsEmail`, `@IsDateString` |
+| Input trimming via `@Transform()` on string fields | PASS | Applied to username, email, fullName, name, description, title, content |
+| Enum validation with custom error messages | PASS | e.g., `'role must be one of: ADMIN, DEVELOPER'` |
+| `NotFoundException` for missing entities | PASS | All services throw with descriptive messages |
+| `BadRequestException` for business rule violations | PASS | Status transitions, missing references, self-blocking |
+| `ConflictException` (409) for concurrent edits | PASS | Optimistic lock errors translated |
+| `ConflictException` (409) for duplicate username/email | PASS | PostgreSQL `23505` error code handled |
+| `UnauthorizedException` (401) for invalid credentials | PASS | Generic message prevents user enumeration |
+| `ForbiddenException` (403) for insufficient role | PASS | `RolesGuard` throws with `'Insufficient permissions'` |
+| Attachment 10 MB size limit | PASS | `MaxFileSizeValidator` in `ParseFilePipe` |
+| Attachment MIME type whitelist | PASS | `FileTypeValidator` regex: `image/png`, `image/jpeg`, `application/pdf`, `text/plain` |
+| CSV import per-row validation with error collection | PASS | Invalid rows collected in `errors` array, import continues |
+| Path traversal protection on attachment filenames | PASS | `path.basename()` strips directory sequences |
+
+**Minor gap found:**
+
+| Finding | Severity | Description |
+|---------|----------|-------------|
+| Audit log `entityId` query param not validated | LOW | `Number('abc')` produces `NaN`, passed to query builder without validation. Should use `ParseIntPipe` or manual check. |
+
+---
+
+#### 4. Security & RBAC
+
+| Check | Result | Notes |
+|-------|--------|-------|
+| Global `JwtAuthGuard` via `APP_GUARD` | PASS | All routes require JWT unless `@Public()` |
+| `@Public()` only on `POST /auth/login` | PASS | Single public endpoint |
+| Global `RolesGuard` via `APP_GUARD` | PASS | Runs after `JwtAuthGuard`, enforces `@Roles()` |
+| JWT secret loaded via `config.getOrThrow()` | PASS | App fails fast if secret is missing |
+| Token revocation (in-memory deny-list) | PASS | `JwtStrategy.validate()` checks revocation before allowing access |
+| Password: bcrypt (10 rounds) + `select: false` + `@Exclude()` | PASS | Defense-in-depth on all query paths |
+| Admin bootstrap seed on empty database | PASS | `UserService.onModuleInit()` seeds admin account |
+
+**RBAC enforcement matrix:**
+
+| Operation | Required Role | Decorator | Status |
+|-----------|--------------|-----------|--------|
+| `POST /users` (create) | ADMIN | `@Roles(Role.ADMIN)` | PASS |
+| `POST /users/update/:userId` | ADMIN | `@Roles(Role.ADMIN)` | PASS |
+| `DELETE /users/:userId` | ADMIN | `@Roles(Role.ADMIN)` | PASS |
+| `GET /tickets/deleted` | ADMIN | `@Roles(Role.ADMIN)` | PASS |
+| `POST /tickets/:id/restore` | ADMIN | `@Roles(Role.ADMIN)` | PASS |
+| `GET /projects/deleted` | ADMIN | `@Roles(Role.ADMIN)` | PASS |
+| `POST /projects/:id/restore` | ADMIN | `@Roles(Role.ADMIN)` | PASS |
+| All other endpoints | Any authenticated user | No `@Roles()` | PASS |
+
+---
+
+### Consolidated Issue Summary
+
+| # | Severity | Category | Description | Affected Files |
+|---|----------|----------|-------------|----------------|
+| 1 | **CRITICAL** | Compliance | All 12 POST endpoints return HTTP 201 instead of the contract-specified 200 (missing `@HttpCode(HttpStatus.OK)`) | All 6 controller files |
+| 2 | **HIGH** | Compliance | `GET /tickets/:ticketId/dependencies` returns full Ticket objects instead of the contracted `{ id, title, status }` shape | `ticket.service.ts`, `ticket.controller.ts` |
+| 3 | **MEDIUM** | Compliance | `mentionedUsers` in comment responses includes `email` and `role` beyond the `{ id, username, fullName }` contract | `comment.service.ts` / entity serialization |
+| 4 | **MEDIUM** | Edge Case | `dueDate` cannot be cleared to `null` once set (`@IsDateString()` rejects null) | `update-ticket.dto.ts` |
+| 5 | **LOW** | Validation | Audit log `entityId` query param not validated (NaN possible from non-numeric input) | `audit-log.controller.ts` |
+| 6 | **LOW** | Compliance | `POST /auth/logout` returns `{ message: "..." }` when README shows empty response body | `auth.controller.ts` |
+
+---
+
+### Architectural Observations (Non-Issues)
+
+| Aspect | Status | Notes |
+|--------|--------|-------|
+| Module boundaries | Clean | Each feature has its own module with proper imports/exports |
+| Circular dependencies | Handled | `forwardRef()` used correctly between User/Comment/Ticket/Project modules |
+| Audit log fault tolerance | Good | `AuditLogService.log()` catches and logs errors, never crashes HTTP requests |
+| Route ordering | Correct | Static routes (`/deleted`, `/export`) declared before parameterized `/:ticketId` |
+| CSV handling | Correct | Commas/quotes handled via `csv-stringify` and `csv-parse` libraries with stream-based parsing |
+| Soft delete | Correct | TypeORM's `@DeleteDateColumn()` with `softRemove()` and `withDeleted()` queries |
+| Escalation scheduler | Robust | Concurrency guard (`isRunning` flag), bulk operations, idempotency |
+
+---
+
+### Verification
+
+All **213 tests** confirmed passing before any fixes are applied:
+
+```
+PASS src/project/project.service.spec.ts
+PASS src/integration/issueflow-flow.integration.spec.ts
+PASS src/comment/comment.service.spec.ts
+PASS src/user/user.service.spec.ts
+PASS src/ticket/ticket.service.spec.ts
+PASS src/project/project.controller.spec.ts
+PASS src/attachment/attachment.service.spec.ts
+PASS src/ticket/ticket.controller.spec.ts
+PASS src/escalation/escalation.scheduler.spec.ts
+PASS src/user/user.controller.spec.ts
+PASS src/comment/comment.controller.spec.ts
+PASS src/attachment/attachment.controller.spec.ts
+PASS src/comment/mention.util.spec.ts
+PASS src/app.controller.spec.ts
+PASS src/audit-log/audit-log.controller.spec.ts
+PASS src/audit-log/audit-log.service.spec.ts
+PASS src/auth/auth.service.spec.ts
+PASS src/auth/auth.controller.spec.ts
+
+Test Suites: 18 passed, 18 total
+Tests:       213 passed, 213 total
+Snapshots:   0 total
+```
+
+### Status
+
+This is a **read-only analysis report**. No code files were modified. The 6 identified issues are documented and prioritized for the next implementation phase.
+
+---
+
+## Final Contract Compliance Fixes
+
+**Date:** Saturday, May 23, 2026
+**Model:** Claude Opus 4.6
+
+### Prompt
+
+> Based on a separate comprehensive Code Review audit we just conducted against the README.md and TDP\_issueflow\_requirements.pdf, we need to apply a final set of compliance and structural fixes to the backend. Please implement the following updates while maintaining our exact code style, architectural boundaries, and clean patterns:
+>
+> 1. **Fix HTTP Status Codes (Critical Contract Alignment):**
+>    - Add `@HttpCode(HttpStatus.OK)` to all 12 `@Post()` endpoint handlers across ALL controllers (Auth, Users, Projects, Tickets, Comments, Attachments). This ensures the API strictly returns "200 OK" instead of NestJS's default "201 Created", matching the README tables exactly.
+>
+> 2. **Refine Response Serialization Layouts (Data Minimization):**
+>    - For `GET /tickets/:ticketId/dependencies`, update the mapping/serialization so that the response array returns ONLY the contracted fields per object: `id`, `title`, and `status`. Strip all other ticket fields.
+>    - For Comment responses containing `mentionedUsers`, ensure that each user object inside the relation array serializes ONLY to: `id`, `username`, and `fullName` (completely exclude email and role from this nested array response).
+>    - For `POST /auth/logout`, ensure the response body returns completely empty with no JSON payload, aligning precisely with the README schema.
+>
+> 3. **Fix DTO Validation & Controller Edge Cases:**
+>    - Update `UpdateTicketDto` to ensure that `dueDate` explicitly accepts `null` as a valid input under `@IsDateString()` or via proper union validation, allowing clients to nullify/clear an existing due date.
+>    - In `AuditLogController`, apply proper parameter transformation/validation (e.g., `ParseIntPipe` or explicit check) to the `entityId` query parameter to prevent non-numeric inputs from passing down as `NaN`.
+>
+> 4. **Verification & Logging:**
+>    - Ensure strict TypeScript compilation (`npx tsc --noEmit`) produces 0 errors.
+>    - Run the complete test suite (`npm run test`) to confirm that all 213 tests pass flawlessly after these changes.
+>    - Update `prompts.md` following our active format rules to append this execution log and final test verification status cleanly.
+
+### Changes Applied
+
+1. **HTTP Status Codes (`@HttpCode(HttpStatus.OK)` on all 12 `@Post()` handlers):**
+   - Added `@HttpCode(HttpStatus.OK)` to every `@Post()` endpoint across 6 controllers: `AuthController` (login, logout), `UserController` (create, update), `ProjectController` (create, restore), `TicketController` (importCsv, create, restore, addDependency), `CommentController` (create), `AttachmentController` (upload). This ensures the API returns "200 OK" instead of NestJS's default "201 Created", matching the README contract tables exactly.
+
+2. **Response Serialization — Dependencies endpoint:**
+   - `TicketController.getDependencies()` now maps the full `Ticket[]` to return only `{ id, title, status }` per object, matching the contracted response shape.
+
+3. **Response Serialization — Comment `mentionedUsers`:**
+   - Added a private `stripMentionFields()` helper in `CommentService` that maps each `mentionedUsers` entry to `{ id, username, fullName }` only, stripping `email` and `role`. Applied to all return paths: `findByTicket()`, `create()`, `update()`, and `findMentionsForUser()`.
+
+4. **Response Serialization — Logout (empty body):**
+   - `AuthController.logout()` return type changed from `{ message: string }` to `void`, producing a completely empty response body per the README schema.
+
+5. **DTO Validation — `UpdateTicketDto.dueDate` accepts `null`:**
+   - Added `@ValidateIf((o) => o.dueDate !== null)` before `@IsDateString()` so clients can send `null` to clear a due date. Updated `TicketService.update()` to handle `null` explicitly: `dto.dueDate ? new Date(dto.dueDate) : null`.
+
+6. **Controller Edge Case — `AuditLogController.entityId` NaN guard:**
+   - Replaced `Number(entityId)` with `parseInt(entityId, 10)` plus an explicit `isNaN()` check. Non-numeric inputs now gracefully fall through as `undefined` (filter skipped) instead of passing `NaN` to the query builder.
+
+### Test Updates
+
+- **Logout tests** (`auth.controller.spec.ts`): Updated to expect `undefined` return value instead of `{ message: ... }`.
+- **Dependencies test** (`ticket.controller.spec.ts`): Updated to assert only `{ id, title, status }` shape.
+
+### Verification
+
+- `npx tsc --noEmit`: **0 errors**
+- `npx jest --no-cache`: **18 suites, 213 tests passed (0 failures)**

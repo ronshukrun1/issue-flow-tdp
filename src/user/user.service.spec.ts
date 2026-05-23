@@ -67,6 +67,7 @@ describe('UserService', () => {
           useValue: {
             find: jest.fn(),
             findOneBy: jest.fn(),
+            findOneByOrFail: jest.fn(),
             count: jest.fn(),
             create: jest.fn(),
             save: jest.fn(),
@@ -215,9 +216,10 @@ describe('UserService', () => {
       (bcrypt.hash as jest.Mock).mockResolvedValue('hashed-password');
     });
 
-    it('should hash the provided password and create a new user', async () => {
+    it('should hash the provided password and re-fetch the user', async () => {
       repo.create.mockReturnValue(mockUser);
       repo.save.mockResolvedValue(mockUser);
+      repo.findOneByOrFail.mockResolvedValue(mockUserWithoutPassword as User);
 
       const result = await service.create(dto);
       expect(bcrypt.hash).toHaveBeenCalledWith('secret123', 10);
@@ -225,6 +227,7 @@ describe('UserService', () => {
         ...dto,
         password: 'hashed-password',
       });
+      expect(repo.findOneByOrFail).toHaveBeenCalledWith({ id: mockUser.id });
       expect(result).not.toHaveProperty('password');
     });
 
@@ -237,6 +240,7 @@ describe('UserService', () => {
       };
       repo.create.mockReturnValue(mockUser);
       repo.save.mockResolvedValue(mockUser);
+      repo.findOneByOrFail.mockResolvedValue(mockUserWithoutPassword as User);
 
       await service.create(dtoWithoutPassword);
       expect(bcrypt.hash).toHaveBeenCalledWith('secret', 10);

@@ -10,6 +10,8 @@ import {
   ParseIntPipe,
   Inject,
   forwardRef,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { Request } from 'express';
@@ -87,6 +89,7 @@ export class ProjectController {
    * `POST /projects` — creates a new project.
    */
   @Post()
+  @HttpCode(HttpStatus.OK)
   async create(
     @Body() dto: CreateProjectDto,
     @Req() req: Request,
@@ -147,6 +150,7 @@ export class ProjectController {
    */
   @Roles(Role.ADMIN)
   @Post(':projectId/restore')
+  @HttpCode(HttpStatus.OK)
   async restore(
     @Param('projectId', ParseIntPipe) projectId: number,
     @Req() req: Request,

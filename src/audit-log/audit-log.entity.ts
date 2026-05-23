@@ -6,6 +6,7 @@ import {
   ManyToOne,
   JoinColumn,
 } from 'typeorm';
+import { Exclude } from 'class-transformer';
 import { User } from '../user/user.entity';
 import { AuditAction } from './enums/audit-action.enum';
 
@@ -15,6 +16,9 @@ import { AuditAction } from './enums/audit-action.enum';
  * User-initiated mutations store the actor's `userId` in `performedBy`;
  * automated actions (escalation, auto-assignment) set `actor` to
  * `'SYSTEM'` and leave `performedBy` null.
+ *
+ * The `performer` navigation property is excluded from serialised
+ * API responses via `@Exclude()` to keep the response shape flat.
  */
 @Entity('audit_logs')
 export class AuditLog {
@@ -35,6 +39,7 @@ export class AuditLog {
 
   @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'performedBy' })
+  @Exclude()
   performer!: User | null;
 
   @Column()

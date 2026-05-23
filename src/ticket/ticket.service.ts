@@ -201,7 +201,7 @@ export class TicketService {
       ticket.isOverdue = false;
     }
     if (dto.assigneeId !== undefined) ticket.assigneeId = dto.assigneeId;
-    if (dto.dueDate !== undefined) ticket.dueDate = new Date(dto.dueDate);
+    if (dto.dueDate !== undefined) ticket.dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
 
     try {
       return await this.ticketRepository.save(ticket);

@@ -14,6 +14,8 @@ import {
   UploadedFile,
   ParseFilePipe,
   FileTypeValidator,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -90,6 +92,7 @@ export class TicketController {
    * `POST /tickets/import` — imports tickets from a CSV file.
    */
   @Post('import')
+  @HttpCode(HttpStatus.OK)
   @UseInterceptors(FileInterceptor('file'))
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -130,6 +133,7 @@ export class TicketController {
    * `POST /tickets` — creates a new ticket.
    */
   @Post()
+  @HttpCode(HttpStatus.OK)
   async create(
     @Body() dto: CreateTicketDto,
     @Req() req: Request,
@@ -190,6 +194,7 @@ export class TicketController {
    */
   @Roles(Role.ADMIN)
   @Post(':ticketId/restore')
+  @HttpCode(HttpStatus.OK)
   async restore(
     @Param('ticketId', ParseIntPipe) ticketId: number,
     @Req() req: Request,
@@ -210,6 +215,7 @@ export class TicketController {
    * `POST /tickets/:ticketId/dependencies` — adds a blocker dependency.
    */
   @Post(':ticketId/dependencies')
+  @HttpCode(HttpStatus.OK)
   async addDependency(
     @Param('ticketId', ParseIntPipe) ticketId: number,
     @Body() dto: AddDependencyDto,
@@ -229,10 +235,11 @@ export class TicketController {
    * `GET /tickets/:ticketId/dependencies` — lists all blocking tickets.
    */
   @Get(':ticketId/dependencies')
-  getDependencies(
+  async getDependencies(
     @Param('ticketId', ParseIntPipe) ticketId: number,
-  ): Promise<Ticket[]> {
-    return this.ticketService.getDependencies(ticketId);
+  ): Promise<{ id: number; title: string; status: string }[]> {
+    const tickets = await this.ticketService.getDependencies(ticketId);
+    return tickets.map((t) => ({ id: t.id, title: t.title, status: t.status }));
   }
 
   /**

@@ -8,6 +8,7 @@ import {
   ManyToOne,
   JoinColumn,
 } from 'typeorm';
+import { Exclude } from 'class-transformer';
 import { User } from '../user/user.entity';
 
 /**
@@ -17,8 +18,9 @@ import { User } from '../user/user.entity';
  * instead of removing the row, and TypeORM's global filter hides
  * soft-deleted records from standard queries.
  *
- * The owner relation uses `onDelete: 'RESTRICT'` to prevent
- * accidentally cascading user deletions into project destruction.
+ * Internal fields (`createdAt`, `updatedAt`, `deletedAt`) and
+ * navigation properties are excluded from serialised API responses
+ * via `@Exclude()` to match the README contract.
  */
 @Entity('projects')
 export class Project {
@@ -41,21 +43,24 @@ export class Project {
   /** Navigation property to the owning {@link User}. */
   @ManyToOne(() => User, { onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'ownerId' })
+  @Exclude()
   owner!: User;
 
-  /** Timestamp of when the project was created. */
+  /** Timestamp of when the project was created. Excluded from API responses. */
   @CreateDateColumn()
+  @Exclude()
   createdAt!: Date;
 
-  /** Timestamp of the last update to the project. */
+  /** Timestamp of the last update to the project. Excluded from API responses. */
   @UpdateDateColumn()
+  @Exclude()
   updatedAt!: Date;
 
   /**
    * Soft-delete timestamp. When non-null the record is hidden from
-   * standard queries. TypeORM sets this automatically on `softRemove()`
-   * or `softDelete()`.
+   * standard queries. Excluded from API responses.
    */
   @DeleteDateColumn()
+  @Exclude()
   deletedAt!: Date | null;
 }

@@ -43,10 +43,11 @@ export class CommentService {
    */
   async findByTicket(ticketId: number): Promise<Comment[]> {
     await this.ticketService.findOne(ticketId);
-    return this.commentRepository.find({
+    const comments = await this.commentRepository.find({
       where: { ticketId },
       relations: ['mentionedUsers'],
     });
+    return comments.map((c) => this.stripMentionFields(c));
   }
 
   /**
@@ -90,10 +91,11 @@ export class CommentService {
     });
     const saved = await this.commentRepository.save(comment);
 
-    return this.commentRepository.findOneOrFail({
+    const result = await this.commentRepository.findOneOrFail({
       where: { id: saved.id },
       relations: ['mentionedUsers'],
     });
+    return this.stripMentionFields(result);
   }
 
   /**
@@ -126,10 +128,11 @@ export class CommentService {
       throw error;
     }
 
-    return this.commentRepository.findOneOrFail({
+    const result = await this.commentRepository.findOneOrFail({
       where: { id: commentId },
       relations: ['mentionedUsers'],
     });
+    return this.stripMentionFields(result);
   }
 
   /**
@@ -171,7 +174,20 @@ export class CommentService {
       .take(pageSize)
       .getManyAndCount();
 
-    return { data, total, page };
+    return { data: data.map((c) => this.stripMentionFields(c)), total, page };
+  }
+
+  /**
+   * Strips `mentionedUsers` to only `{ id, username, fullName }` per
+   * the README contract. Prevents email/role leakage in comment responses.
+   */
+  private stripMentionFields(comment: Comment): Comment {
+    if (comment.mentionedUsers) {
+      comment.mentionedUsers = comment.mentionedUsers.map(
+        (u) => ({ id: u.id, username: u.username, fullName: u.fullName }) as User,
+      );
+    }
+    return comment;
   }
 
   /**

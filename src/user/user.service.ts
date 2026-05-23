@@ -151,15 +151,13 @@ export class UserService implements OnModuleInit {
         plainPassword,
         BCRYPT_SALT_ROUNDS,
       );
-      const { password: _plain, ...userFields } = dto;
       const user = this.userRepository.create({
-        ...userFields,
+        ...dto,
         password: hashedPassword,
       });
       const saved = await this.userRepository.save(user);
 
-      const { password: _, ...result } = saved as User & { password: string };
-      return result as User;
+      return this.userRepository.findOneByOrFail({ id: saved.id });
     } catch (error: unknown) {
       if (isQueryFailedWithCode(error, '23505')) {
         throw new ConflictException(

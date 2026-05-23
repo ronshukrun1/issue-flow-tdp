@@ -4,6 +4,7 @@ import {
   IsInt,
   IsOptional,
   IsDateString,
+  ValidateIf,
   MinLength,
   MaxLength,
 } from 'class-validator';
@@ -56,8 +57,9 @@ export class UpdateTicketDto {
   @IsInt()
   assigneeId?: number;
 
-  /** Updated due date in ISO-8601 format. */
+  /** Updated due date in ISO-8601 format. Send `null` to clear. */
   @IsOptional()
+  @ValidateIf((o) => o.dueDate !== null)
   @IsDateString()
-  dueDate?: string;
+  dueDate?: string | null;
 }

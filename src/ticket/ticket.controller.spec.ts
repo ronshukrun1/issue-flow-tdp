@@ -217,9 +217,12 @@ describe('TicketController', () => {
   });
 
   describe('getDependencies', () => {
-    it('should return blocking tickets', async () => {
+    it('should return only id, title, status per blocking ticket', async () => {
       service.getDependencies.mockResolvedValue([mockTicket]);
-      expect(await controller.getDependencies(1)).toEqual([mockTicket]);
+      const result = await controller.getDependencies(1);
+      expect(result).toEqual([
+        { id: mockTicket.id, title: mockTicket.title, status: mockTicket.status },
+      ]);
     });
   });
 
