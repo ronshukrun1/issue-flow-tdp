@@ -123,6 +123,51 @@ npx tsc --noEmit
 
 ---
 
+## 7. End-to-End Curl Testing
+
+The project includes a `tests.sh` shell script that exercises **every** API endpoint defined in the README contract tables using pure `curl` commands. The script authenticates with the seeded admin account, creates test data, and walks through all 11 API sections sequentially.
+
+The script is **fully idempotent** — safe to run multiple times against the same database. If a resource already exists (e.g., `409 Conflict`), it automatically falls back to a `GET` request to resolve the existing resource ID instead of failing.
+
+### Prerequisites
+
+| Tool   | Purpose                                   |
+|--------|-------------------------------------------|
+| curl   | HTTP requests                             |
+| jq     | JSON parsing (for token/ID extraction)    |
+
+### Run the script
+
+```bash
+bash tests.sh
+```
+
+By default the script targets `http://localhost:3000`. Override with the `BASE_URL` environment variable:
+
+```bash
+BASE_URL=http://localhost:4000 bash tests.sh
+```
+
+### What it covers
+
+| # | Section               | Endpoints Tested |
+|---|-----------------------|------------------|
+| 1 | Authentication        | `POST /auth/login`, `GET /auth/me`, `POST /auth/logout` |
+| 2 | Users                 | `POST /users`, `GET /users`, `GET /users/:userId`, `POST /users/update/:userId`, `DELETE /users/:userId` |
+| 3 | Projects              | `POST /projects`, `GET /projects`, `GET /projects/:projectId`, `PATCH /projects/:projectId`, `DELETE /projects/:projectId` |
+| 4 | Tickets               | `POST /tickets`, `GET /tickets?projectId=`, `GET /tickets/:ticketId`, `PATCH /tickets/:ticketId`, `DELETE /tickets/:ticketId`, `GET /tickets/export?projectId=`, `POST /tickets/import` |
+| 5 | Comments              | `POST /tickets/:ticketId/comments`, `GET /tickets/:ticketId/comments`, `PATCH /tickets/:ticketId/comments/:commentId`, `DELETE /tickets/:ticketId/comments/:commentId` |
+| 6 | Audit Logs            | `GET /audit-logs` (unfiltered + 4 query-param filters) |
+| 7 | Dependencies          | `POST /tickets/:ticketId/dependencies`, `GET /tickets/:ticketId/dependencies`, `DELETE /tickets/:ticketId/dependencies/:blockerId` |
+| 8 | Attachments           | `POST /tickets/:ticketId/attachments`, `DELETE /tickets/:ticketId/attachments/:attachmentId` |
+| 9 | Mentions              | `GET /users/:userId/mentions` (default + paginated) |
+| 10 | Workload             | `GET /projects/:projectId/workload` |
+| 11 | Soft Delete          | `GET /tickets/deleted?projectId=`, `POST /tickets/:ticketId/restore`, `GET /projects/deleted`, `POST /projects/:projectId/restore` |
+
+Each `curl` command prints the HTTP status code alongside the expected status, and the response body for visual comparison against the README contract.
+
+---
+
 ## Implemented Features
 
 ### Phase 1 — User Management
@@ -149,7 +194,7 @@ npx tsc --noEmit
   - `@Public()` decorator to exempt specific routes.
 - **Role-Based Authorization (RBAC)**:
   - `@Roles()` decorator and `RolesGuard` for route-level access control.
-  - Admin-only routes: `POST /users`, `DELETE /users/:userId`, soft-deleted listings, restores.
+  - Admin-only routes: soft-deleted listings, restores.
 - **Global `ClassSerializerInterceptor`** for `@Exclude()` on sensitive fields.
 - **Project Module** (`src/project/`):
   - `Project` entity — `id`, `name`, `description`, `ownerId` (FK → User, `onDelete: RESTRICT`), `createdAt`, `updatedAt`, `deletedAt` (soft-delete).
