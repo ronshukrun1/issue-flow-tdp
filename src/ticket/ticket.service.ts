@@ -278,9 +278,9 @@ export class TicketService {
       .select('user.id', 'userId')
       .addSelect('COUNT(ticket.id)', 'openTicketCount')
       .groupBy('user.id')
-      .addGroupBy('user."createdAt"')
-      .orderBy('"openTicketCount"', 'ASC')
-      .addOrderBy('user."createdAt"', 'ASC')
+      .addGroupBy('user.createdAt')
+      .orderBy('COUNT(ticket.id)', 'ASC')
+      .addOrderBy('user.createdAt', 'ASC')
       .limit(1)
       .getRawOne<{ userId: number; openTicketCount: string }>();
 
@@ -329,7 +329,7 @@ export class TicketService {
       .addSelect('COUNT(ticket.id)', 'openTicketCount')
       .groupBy('user.id')
       .addGroupBy('user.username')
-      .orderBy('"openTicketCount"', 'ASC')
+      .orderBy('COUNT(ticket.id)', 'ASC')
       .getRawMany<{ userId: number; username: string; openTicketCount: string }>();
 
     return rows.map((r) => ({
