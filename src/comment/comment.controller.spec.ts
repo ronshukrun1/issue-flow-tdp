@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { NotFoundException, BadRequestException } from '@nestjs/common';
+import { NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { Request } from 'express';
 import { CommentController } from './comment.controller';
 import { CommentService } from './comment.service';
@@ -38,6 +38,9 @@ const mockComment: Comment = {
 
 const mockRequest = (userId: number): Request =>
   ({ user: { userId, username: 'alice', role: Role.DEVELOPER } }) as unknown as Request;
+
+const mockAdminRequest = (userId: number): Request =>
+  ({ user: { userId, username: 'admin', role: Role.ADMIN } }) as unknown as Request;
 
 describe('CommentController', () => {
   let controller: CommentController;
@@ -116,7 +119,29 @@ describe('CommentController', () => {
 
       const result = await controller.update(1, 1, dto, req);
       expect(result).toEqual(updated);
+      expect(service.update).toHaveBeenCalledWith(1, 1, dto, {
+        userId: 1,
+        role: Role.DEVELOPER,
+      });
       expect(auditLogService.log).toHaveBeenCalled();
+    });
+
+    it('should pass ADMIN role from JWT payload to commentService.update', async () => {
+      const updated = { ...mockComment, content: 'Admin edited' };
+      service.update.mockResolvedValue(updated);
+
+      await controller.update(1, 1, dto, mockAdminRequest(42));
+      expect(service.update).toHaveBeenCalledWith(1, 1, dto, {
+        userId: 42,
+        role: Role.ADMIN,
+      });
+    });
+
+    it('should propagate ForbiddenException', async () => {
+      service.update.mockRejectedValue(new ForbiddenException());
+      await expect(controller.update(1, 1, dto, mockRequest(1))).rejects.toThrow(
+        ForbiddenException,
+      );
     });
 
     it('should propagate NotFoundException', async () => {
@@ -131,7 +156,18 @@ describe('CommentController', () => {
       const req = mockRequest(1);
 
       await expect(controller.remove(1, 1, req)).resolves.toBeUndefined();
+      expect(service.remove).toHaveBeenCalledWith(1, 1, {
+        userId: 1,
+        role: Role.DEVELOPER,
+      });
       expect(auditLogService.log).toHaveBeenCalled();
+    });
+
+    it('should propagate ForbiddenException', async () => {
+      service.remove.mockRejectedValue(new ForbiddenException());
+      await expect(controller.remove(1, 1, mockRequest(8))).rejects.toThrow(
+        ForbiddenException,
+      );
     });
 
     it('should propagate NotFoundException', async () => {

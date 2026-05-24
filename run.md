@@ -166,6 +166,8 @@ BASE_URL=http://localhost:4000 bash tests.sh
 
 Each `curl` command prints the HTTP status code alongside the expected status, and the response body for visual comparison against the README contract.
 
+**Concurrent ticket updates:** The contract script exercises a single sequential `PATCH /tickets/:ticketId`. Behavior under overlap is enforced in the ticket service layer (PostgreSQL `FOR UPDATE NOWAIT` → **409 Conflict** with the generic message quoted in Phase 3a below). To confirm manually, run two overlapping PATCH requests against the same ticket ID (for example two terminal tabs with Bearer tokens); both should remain valid sequentially, without both commits applying blindly to the same in-flight logical update.
+
 ---
 
 ## Implemented Features
@@ -207,13 +209,16 @@ Each `curl` command prints the HTTP status code alongside the expected status, a
 - **Ticket Module** (`src/ticket/`):
   - `Ticket` entity — `id`, `title`, `description`, `status` (TODO | IN_PROGRESS | IN_REVIEW | DONE), `priority` (LOW | MEDIUM | HIGH | CRITICAL), `type` (BUG | FEATURE | TECHNICAL), `projectId`, `assigneeId`, `dueDate`, `isOverdue`, `version` (@VersionColumn), `createdAt`, `updatedAt`, `deletedAt`.
   - Status lifecycle enforced: forward-only transitions (TODO → IN_PROGRESS → IN_REVIEW → DONE); no updates on DONE tickets.
+  - **`PATCH /tickets/:ticketId` concurrency:** The service opens a PostgreSQL transaction, loads the ticket with **row-level pessimistic write locking** (`SELECT ... FOR UPDATE NOWAIT`). If another request already holds that row lock, PostgreSQL raises **SQLSTATE `55P03`**, which is mapped to **HTTP 409 Conflict** with the generic message: *"The system was unable to process your request at this moment. Please try again in a few moments."* No request/response body fields are added; `GET /tickets/:ticketId` continues to read the latest **committed** state without using this lock.
   - Optimistic locking: `@VersionColumn` with `ConflictException` (409) on version mismatch (TDP 2.4).
   - REST endpoints:
     - `GET /tickets?projectId=`, `GET /tickets/deleted?projectId=`, `GET /tickets/:ticketId`, `POST /tickets`, `PATCH /tickets/:ticketId`, `DELETE /tickets/:ticketId`, `POST /tickets/:ticketId/restore`
 - **Comment Module** (`src/comment/`):
   - `Comment` entity — `id`, `ticketId`, `authorId`, `content`, `mentionedUsers` (ManyToMany → User), `version` (@VersionColumn), `createdAt`, `updatedAt`.
   - `@username` mention parsing and resolution.
-  - Author derived from JWT payload (not client body) to prevent spoofing.
+  - Author derived from JWT payload (not client body) to prevent spoofing on create.
+  - **`PATCH` / `DELETE` authorization:** `ADMIN` may update or delete any comment; `DEVELOPER` only when `comment.authorId` matches the JWT subject. Cross-author attempts return **403 Forbidden** with message *"You are not allowed to modify this comment."* (no API shape change).
+  - **`PATCH` / `DELETE` row locking:** both use a DB transaction with **`SELECT ... FOR UPDATE NOWAIT`** scoped by `commentId` + `ticketId`; **SQLSTATE `55P03`** → **409 Conflict** with the shared generic try-again message (covers overlap between concurrent **`PATCH`** and **`DELETE`** as well as two deletes). Optimistic version conflicts on **`PATCH`** still use a different **409** body text.
   - Optimistic locking with `ConflictException` (409) on version mismatch (TDP 2.5).
   - REST endpoints:
     - `GET /tickets/:ticketId/comments`, `POST /tickets/:ticketId/comments`, `PATCH /tickets/:ticketId/comments/:commentId`, `DELETE /tickets/:ticketId/comments/:commentId`

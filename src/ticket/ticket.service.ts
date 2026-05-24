@@ -7,7 +7,11 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not, OptimisticLockVersionMismatchError } from 'typeorm';
+import {
+  Repository,
+  OptimisticLockVersionMismatchError,
+  DataSource,
+} from 'typeorm';
 import { stringify } from 'csv-stringify/sync';
 import { parse } from 'csv-parse';
 import { Ticket } from './ticket.entity';
@@ -23,6 +27,10 @@ import { User } from '../user/user.entity';
 import { Role } from '../user/role.enum';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { AuditAction } from '../audit-log/enums/audit-action.enum';
+import {
+  PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE,
+  isPgLockNotAvailableError,
+} from '../common/pg-nowait-row-lock';
 
 /**
  * Encapsulates all business logic for ticket management.
@@ -43,6 +51,7 @@ export class TicketService {
     @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
     private readonly auditLogService: AuditLogService,
+    private readonly dataSource: DataSource,
   ) {}
 
   /**
@@ -137,81 +146,113 @@ export class TicketService {
    * @returns The updated {@link Ticket} entity.
    * @throws {NotFoundException} When the ticket does not exist.
    * @throws {BadRequestException} When the ticket is DONE or status moves backward.
+   * @throws {ConflictException} When the pessimistic **`NOWAIT`** row lock cannot be acquired (SQLSTATE `55P03`).
    */
   async update(id: number, dto: UpdateTicketDto): Promise<Ticket> {
-    const ticket = await this.findOne(id);
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+    try {
+      let ticket: Ticket | null;
+      try {
+        ticket = await queryRunner.manager.findOne(Ticket, {
+          where: { id },
+          lock: { mode: 'pessimistic_write', onLocked: 'nowait' },
+        });
+      } catch (error: unknown) {
+        if (isPgLockNotAvailableError(error)) {
+          throw new ConflictException(PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE);
+        }
+        throw error;
+      }
 
-    if (ticket.status === TicketStatus.DONE) {
-      throw new BadRequestException(
-        'Cannot update a ticket that is already DONE',
-      );
-    }
+      if (!ticket) {
+        throw new NotFoundException(`Ticket with ID ${id} not found`);
+      }
 
-    if (dto.status !== undefined) {
-      const currentOrder = STATUS_ORDER[ticket.status];
-      const newOrder = STATUS_ORDER[dto.status];
-      if (newOrder <= currentOrder) {
+      if (ticket.status === TicketStatus.DONE) {
         throw new BadRequestException(
-          `Invalid status transition: ${ticket.status} → ${dto.status}. Status can only move forward.`,
+          'Cannot update a ticket that is already DONE',
         );
       }
 
-      if (dto.status === TicketStatus.DONE) {
-        const unresolvedCount = await this.ticketRepository
-          .createQueryBuilder('ticket')
-          .innerJoin(
-            'ticket_dependencies',
-            'dep',
-            'dep."ticketId" = :ticketId',
-            { ticketId: id },
-          )
-          .innerJoin(
-            'tickets',
-            'blocker',
-            'blocker.id = dep."blockedById"',
-          )
-          .where('blocker.status != :done', { done: TicketStatus.DONE })
-          .getCount();
-        if (unresolvedCount > 0) {
+      if (dto.status !== undefined) {
+        const currentOrder = STATUS_ORDER[ticket.status];
+        const newOrder = STATUS_ORDER[dto.status];
+        if (newOrder <= currentOrder) {
           throw new BadRequestException(
-            `Cannot transition to DONE: ${unresolvedCount} unresolved blocker(s)`,
+            `Invalid status transition: ${ticket.status} → ${dto.status}. Status can only move forward.`,
           );
         }
-      }
-    }
 
-    if (dto.assigneeId !== undefined) {
+        if (dto.status === TicketStatus.DONE) {
+          const unresolvedCount = await queryRunner.manager
+            .createQueryBuilder(Ticket, 'ticket')
+            .innerJoin(
+              'ticket_dependencies',
+              'dep',
+              'dep."ticketId" = :ticketId',
+              { ticketId: id },
+            )
+            .innerJoin(
+              'tickets',
+              'blocker',
+              'blocker.id = dep."blockedById"',
+            )
+            .where('blocker.status != :done', { done: TicketStatus.DONE })
+            .getCount();
+          if (unresolvedCount > 0) {
+            throw new BadRequestException(
+              `Cannot transition to DONE: ${unresolvedCount} unresolved blocker(s)`,
+            );
+          }
+        }
+      }
+
+      if (dto.assigneeId !== undefined) {
+        try {
+          await this.userService.findOne(dto.assigneeId);
+        } catch (error: unknown) {
+          if (error instanceof NotFoundException) {
+            throw new BadRequestException(
+              `Assignee with ID ${dto.assigneeId} does not exist`,
+            );
+          }
+          throw error;
+        }
+      }
+
+      if (dto.title !== undefined) ticket.title = dto.title;
+      if (dto.description !== undefined) ticket.description = dto.description;
+      if (dto.status !== undefined) ticket.status = dto.status;
+      if (dto.priority !== undefined) {
+        ticket.priority = dto.priority;
+        ticket.isOverdue = false;
+      }
+      if (dto.assigneeId !== undefined) ticket.assigneeId = dto.assigneeId;
+      if (dto.dueDate !== undefined) {
+        ticket.dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
+      }
+
+      let saved: Ticket;
       try {
-        await this.userService.findOne(dto.assigneeId);
+        saved = await queryRunner.manager.save(Ticket, ticket);
       } catch (error: unknown) {
-        if (error instanceof NotFoundException) {
-          throw new BadRequestException(
-            `Assignee with ID ${dto.assigneeId} does not exist`,
+        if (error instanceof OptimisticLockVersionMismatchError) {
+          throw new ConflictException(
+            'Ticket was modified by another user. Please reload and retry.',
           );
         }
         throw error;
       }
-    }
 
-    if (dto.title !== undefined) ticket.title = dto.title;
-    if (dto.description !== undefined) ticket.description = dto.description;
-    if (dto.status !== undefined) ticket.status = dto.status;
-    if (dto.priority !== undefined) {
-      ticket.priority = dto.priority;
-      ticket.isOverdue = false;
-    }
-    if (dto.assigneeId !== undefined) ticket.assigneeId = dto.assigneeId;
-    if (dto.dueDate !== undefined) ticket.dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
-
-    try {
-      return await this.ticketRepository.save(ticket);
+      await queryRunner.commitTransaction();
+      return saved;
     } catch (error: unknown) {
-      if (error instanceof OptimisticLockVersionMismatchError) {
-        throw new ConflictException(
-          'Ticket was modified by another user. Please reload and retry.',
-        );
-      }
+      await queryRunner.rollbackTransaction();
       throw error;
+    } finally {
+      await queryRunner.release();
     }
   }
 

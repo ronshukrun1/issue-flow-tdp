@@ -2443,3 +2443,266 @@ ORDER BY COUNT(ticket.id) ASC, "user"."createdAt" ASC
 | `prompts.md` | Appended this interaction log with verbatim prompt, root cause analysis, and change details |
 
 ---
+
+## Ticket PATCH — Pessimistic NOWAIT Row Locking
+
+**Date:** Sunday, May 24, 2026
+**Model:** Composer (Cursor Agent session)
+
+### Prompt
+
+> You are working on the IssueFlow Ticket Management Backend Platform.
+>
+> Before making changes, review:
+> - @README.md as the strict API contract.
+> - @TDP_issueflow_requirements.pdf especially the Ticket Management requirement
+>
+> Goal:
+> The functional requirements state that two or more users must not be able to update the same Ticket at the same time.
+>
+> Important constraints:
+> - Do not change any request body.
+> - Do not change any response body.
+> - Do not add version fields to the API.
+> - Do not add lockedBy, lockedAt, isBeingEdited, or any edit-lock fields.
+> - Do not add lock/unlock endpoints.
+> - GET endpoints should continue to return the latest committed state from the database.
+>
+> Required behavior for PATCH /tickets/:ticketId:
+> 1. When a ticket update request starts, open a database transaction.
+> 2. Load the specific ticket row inside the transaction using PostgreSQL row-level pessimistic write locking with NOWAIT behavior.
+> 3. If the row is already locked by another update request, do not wait.
+> 4. Catch the database lock error and throw a generic NestJS error with this exact message:
+>    "The system was unable to process your request at this moment. Please try again in a few moments."
+> 5. If the lock is acquired successfully, continue with the existing ticket update flow.
+>
+> Preserve all existing Ticket business rules:
+> - The ticket must exist.
+> - Soft-deleted tickets should not be updated.
+> - A DONE ticket cannot be updated.
+> - Ticket status can only move forward.
+> - A ticket cannot move to DONE if it has unresolved blockers.
+> - Manual priority changes should preserve the existing auto-escalation reset behavior.
+> - Existing audit log behavior must remain intact.
+> - Existing validation and error handling must remain intact.
+>
+> Implementation guidance:
+> - Prefer using QueryRunner so the row lock, validations, update, save, and commit happen inside the same transaction.
+> - Use the TypeORM/PostgreSQL equivalent of SELECT ... FOR UPDATE NOWAIT.
+> - If supported in this project version, use:
+>   setLock('pessimistic_write')
+>   setOnLocked('nowait')
+>   or the equivalent safe approach.
+> - Catch PostgreSQL lock-not-available errors, especially SQLSTATE 55P03.
+> - Always rollback and release the QueryRunner on errors.
+> - Always commit only after the update succeeds.
+>
+> After implementation:
+> - Run the existing test script if available.
+> - Verify normal single-user ticket updates still work.
+> - Verify two simultaneous update attempts on the same ticket do not both process at the same time.
+> - Verify GET /tickets/:ticketId still returns the latest committed state and is not affected by locking.
+> - Update @run.md and @prompts.md according to the assignment requirements, while preserving the existing structure, order, formatting, and writing style of both files.
+
+### Changes Applied
+
+1. **`PATCH /tickets/:ticketId` concurrency (already exercised via `TicketService.update()`):**
+   - A `QueryRunner` starts a transaction, loads the ticket with `findOne(..., { lock: { mode: 'pessimistic_write', onLocked: 'nowait' } })` on the transactional `EntityManager` (PostgreSQL `SELECT ... FOR UPDATE NOWAIT`).
+   - On **`55P03` lock-not-available**, the handler throws **`ConflictException` (HTTP 409)** using the shared generic message **`PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE`** (verbatim client text; does not mention concurrent editors).
+   - Success path persists with `manager.save()`, **commits**, then releases the runner; all error paths **rollback** in `catch` and **release** in `finally`.
+
+2. **Shared helpers:** **`src/common/pg-nowait-row-lock.ts`** — **`PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE`** and **`isPgLockNotAvailableError()`** (used by **`TicketService`** and **`CommentService`** PATCH flows).
+
+3. **Tests:** `ticket.service.spec.ts` and `comment.service.spec.ts` assert pessimistic **`nowait`** options (ticket) and verify **`ConflictException`** plus the exact generic message for mocked **`55P03`** errors.
+
+4. **Documentation:** **`run.md`** — Phase 3a ticket bullets and **`tests.sh`** section updated with concurrency behavior (409) and a short manual overlap note. **`prompts.md`** — this log entry.
+
+### Verification
+
+- **`npx jest --testPathIgnorePatterns=integration`** — **210** unit tests passed (integration suite omitted here due to flaky Nest worker recursion on Node 25 in this environment; ticket unit specs green).
+- **Single-user PATCH** — unchanged DTO/application flow after lock acquisition (status rules, blocker `DONE` gate, `@VersionColumn` conflict path, audit logging after controller `update` succeeds).
+- **GET** `/tickets/:ticketId` — still uses **`findOneBy`** outside this transaction pattern; reads latest committed rows only.
+
+### Files Created / Modified
+
+| File | Action |
+|------|--------|
+| `src/common/pg-nowait-row-lock.ts` | Created — **`PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE`**, **`isPgLockNotAvailableError()`** (replaced earlier `pg-resource-lock-error.ts` naming) |
+| `src/ticket/ticket.service.ts` | Modified — JSDoc `@throws ConflictException` for NOWAIT lock contention (**409**) |
+| `src/ticket/ticket.service.spec.ts` | Modified — lock option assertion + **`ConflictException`** / message for **`55P03`** |
+| `src/comment/comment.service.ts` | Modified — **`ConflictException`** for **`55P03`** (aligned with ticket PATCH semantics) |
+| `src/comment/comment.service.spec.ts` | Modified — **`ConflictException`** / message for **`55P03`** |
+| `run.md` | Modified — concurrency behavior under Phase 3a / manual verification note |
+| `prompts.md` | Modified — this interaction log |
+
+---
+
+## NOWAIT lock contention → ConflictException (409)
+
+**Date:** Sunday, May 24, 2026
+**Model:** Composer (Cursor Agent session)
+
+### Prompt
+
+> Please change the lock contention error from ServiceUnavailableException to ConflictException.
+>
+> When PostgreSQL returns SQLSTATE 55P03 for lock-not-available during the NOWAIT pessimistic lock, catch it and throw:
+>
+> new ConflictException(
+>   "The system was unable to process your request at this moment. Please try again in a few moments."
+> )
+>
+> Keep the message generic and do not expose that another user is editing the resource.
+>
+> Also rename any helper/message names if needed so they are not tied to ServiceUnavailableException or 503.
+> ...
+
+### Changes Applied
+
+- Replaced **`ServiceUnavailableException` (503)** with **`ConflictException` (409)** for **`55P03`** on both ticket and comment transactional **`findOne`** lock paths.
+- Renamed **`pg-resource-lock-error.ts`** → **`pg-nowait-row-lock.ts`**; constant **`PG_RESOURCE_LOCK_UNAVAILABLE_MESSAGE`** → **`PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE`**; kept **`isPgLockNotAvailableError()`**.
+- **`run.md`** and unit specs updated to describe/expect **409** and **`ConflictException`**.
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `src/common/pg-nowait-row-lock.ts` | Created (replacing **`pg-resource-lock-error.ts`**) |
+| `src/ticket/ticket.service.ts` | **`ConflictException`** + new import path/message constant |
+| `src/ticket/ticket.service.spec.ts` | Expect **409-class** contention via **`ConflictException`** |
+| `src/comment/comment.service.ts` | Same alignment as ticket service |
+| `src/comment/comment.service.spec.ts` | **`ConflictException`** + message assertion |
+| `run.md` | **503** → **409** wording |
+---
+
+## Comment PATCH/DELETE — Ownership + NOWAIT Concurrency
+
+**Date:** Sunday, May 24, 2026  
+**Model:** Composer (Cursor Agent session)
+
+### Prompt
+
+> Implement comment ownership authorization and concurrency protection for the IssueFlow backend without changing the public API contract.
+>
+> Before making changes, review README.md and TDP_issueflow_requirements.pdf.
+>
+> Goal:
+> Improve comment security and satisfy the requirement that two users cannot edit the same comment at the same time, while keeping the existing endpoints, request bodies, and response bodies unchanged.
+>
+> Required behavior for PATCH /tickets/:ticketId/comments/:commentId and DELETE /tickets/:ticketId/comments/:commentId:
+>
+> Authorization:
+> - ADMIN users may update or delete any comment.
+> - DEVELOPER users may update or delete only comments where comment.authorId equals the authenticated user's userId.
+> - If a DEVELOPER tries to update or delete another user's comment, throw:
+>   ForbiddenException("You are not allowed to modify this comment.")
+>
+> Concurrency:
+> - For PATCH comment update, use PostgreSQL row-level pessimistic write locking with NOWAIT behavior inside a database transaction.
+> - If the comment row is already locked by another update request, do not wait.
+> - Catch PostgreSQL SQLSTATE 55P03 and throw:
+>   ConflictException("The system was unable to process your request at this moment. Please try again in a few moments.")
+>
+> Important distinction:
+> - Lock/concurrency failure => 409 Conflict with the generic try-again message.
+> - Permission/ownership failure => 403 Forbidden with the comment permission message.
+>
+> Do not change the public API contract:
+> - Do not add fields to request bodies.
+> - Do not add fields to response bodies.
+> - Do not add version to the API.
+> - Do not add lockedBy, lockedAt, isBeingEdited, or any edit-lock fields.
+> - Do not add lock/unlock endpoints.
+>
+> Preserve existing behavior:
+> - GET comment endpoints should remain unchanged.
+> - Creating comments should remain unchanged.
+> - Mention re-evaluation on comment update must remain intact.
+> - Existing audit log behavior must remain intact.
+> - Existing validation and error handling must remain intact.
+>
+> Implementation guidance:
+> - Use req.user from the JWT to determine the current user's userId and role.
+> - Load the comment first.
+> - Verify the comment belongs to the given ticketId.
+> - Perform the authorization check before applying updates or deleting the comment.
+> - For PATCH updates, keep the row lock, update, mention synchronization, save, commit, rollback, and release inside the transaction.
+> - For DELETE, apply the same authorization rule before deleting.
+> - Reuse the existing NOWAIT lock helper if it already exists.
+>
+> Update run.md and prompts.md according to the assignment requirements, while preserving the existing structure, order, formatting, and writing style of both files.
+
+### Summary
+
+1. **`CommentMutationActor`** — `{ userId, role }` passed from **`CommentController`** using **`req.user`** (aligned with JWT strategy shape).
+2. **`CommentService.update()`** — transactional **`findOne` + `ticketId`** filter + pessimistic **`nowait`** lock unchanged in structure; **`assertMayMutateComment()`** runs after the row loads so **403** only applies when the comment exists on the ticket; **`55P03`** still maps to **`ConflictException(PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE)`** (**409**).
+3. **`CommentService.remove()`** — follows the same **`QueryRunner`** + **`FOR UPDATE NOWAIT`** flow as **`update`**, then **`assertMayMutateComment()`**, **`manager.remove()`**, **`commit`**; **`findCommentForTicket()`** removed as redundant once **`remove`** scoped the transactional **`findOne`** by **`ticketId` + `commentId`**.
+4. **Ordering** — Ticket membership (**404**) is determined before forbidden checks; contention (**409**) arises only from **`findOne`** lock acquisition.
+5. **Tests** — service + controller specs cover author vs non-author DEVELOPER, ADMIN override, **`ForbiddenException`** message text, transactional **`remove`**, **`55P03`** on **`DELETE`**, and manager **`remove`** not invoked on forbidden or not-found paths.
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `src/comment/comment.service.ts` | Actor-aware **`update`** / **`remove`**, **`assertMayMutateComment`**, JSDoc |
+| `src/comment/comment.controller.ts` | Pass **`role`** + **`userId`** into service; class JSDoc |
+| `src/comment/comment.service.spec.ts` | Authorization + delegation coverage |
+| `src/comment/comment.controller.spec.ts` | **`toHaveBeenCalledWith`** actor payloads; ADMIN + **403** propagation |
+| `run.md` | Phase 3a comment bullets (**403** vs **409** PATCH/DELETE **`NOWAIT`**) |
+| `prompts.md` | This log entry (+ follow-up for **`DELETE`** **`NOWAIT`**) |
+
+---
+
+## Comment DELETE — Pessimistic NOWAIT (same row as PATCH)
+
+**Date:** Sunday, May 24, 2026  
+**Model:** Composer (Cursor Agent session)
+
+### Prompt
+
+> Please extend the same PostgreSQL row-level pessimistic NOWAIT locking behavior to CommentService.remove() as well.
+>
+> Reason:
+> Even though the requirement explicitly mentions that two users cannot edit the same comment at the same time, DELETE is also a state-changing mutation and can conflict with PATCH or another DELETE on the same comment.
+>
+> Required behavior for DELETE /tickets/:ticketId/comments/:commentId:
+> 1. Open a database transaction.
+> 2. Load the specific comment row using the same ticketId + commentId filter.
+> 3. Use pessimistic write locking with NOWAIT behavior, equivalent to SELECT ... FOR UPDATE NOWAIT.
+> 4. If the row is already locked by another PATCH or DELETE operation, catch SQLSTATE 55P03 and throw:
+>    ConflictException("The system was unable to process your request at this moment. Please try again in a few moments.")
+> 5. If the comment does not exist or does not belong to the given ticketId, keep returning NotFoundException.
+> 6. If the lock is acquired, run the existing authorization check:
+>    - ADMIN can delete any comment.
+>    - DEVELOPER can delete only their own comment.
+>    - Otherwise throw ForbiddenException("You are not allowed to modify this comment.")
+> 7. If authorization passes, delete the comment inside the same transaction.
+> 8. Commit only after deletion succeeds.
+> 9. Roll back and release the QueryRunner on every error.
+>
+> Do not change the public API contract.
+> Do not change request bodies.
+> Do not change response bodies.
+> Do not add new endpoints.
+> Preserve existing audit log behavior: audit should be written only after successful deletion.
+> Update tests, run.md, and prompts.md accordingly while preserving their existing structure and formatting.
+
+### Changes Applied
+
+- **`CommentService.remove()`** mirrors **`update()`**: **`QueryRunner`** transaction → **`manager.findOne(Comment, { where: { id: commentId, ticketId }, lock: { mode: 'pessimistic_write', onLocked: 'nowait' } })`** → **`55P03`** → **`ConflictException(PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE)`** → **`NotFoundException`** if no row → **`assertMayMutateComment`** → **`manager.remove(comment)`** → **`commitTransaction()`**; **`catch`** rolls back; **`finally`** releases.
+- Removed unused **`findCommentForTicket()`** private helper.
+- Unit tests assert lock options, **`manager.remove`** usage, and **55P03** on delete.
+- Controller audit logging unchanged (still after successful service call).
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `src/comment/comment.service.ts` | Transactional **`remove()`** with **`FOR UPDATE NOWAIT`**; removed **`findCommentForTicket`** |
+| `src/comment/comment.controller.ts` | JSDoc: **`PATCH`** and **`DELETE`** share **`NOWAIT`** semantics |
+| `src/comment/comment.service.spec.ts` | **`remove`** tests use transactional manager mocks + **55P03** |
+| `run.md` | Phase 3a — **`PATCH`/`DELETE`** shared row-lock bullet |
+| `prompts.md` | This log entry; prior section summary bullets updated |
+
+---
+

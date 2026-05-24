@@ -19,14 +19,21 @@ import { UpdateCommentDto } from './dto/update-comment.dto';
 import { Comment } from './comment.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { AuditAction } from '../audit-log/enums/audit-action.enum';
+import { Role } from '../user/role.enum';
 
 /**
  * Handles HTTP requests for comments nested under `/tickets/:ticketId/comments`.
  *
  * The authenticated user's ID is extracted from the JWT payload
  * (`req.user.userId`) rather than accepted from the request body,
- * preventing author spoofing. State-changing actions are recorded
- * in the audit log.
+ * preventing author spoofing. State-changing actions are recorded in the
+ * audit log.
+ *
+ * For `PATCH` and `DELETE`, `ADMIN` may modify any comment; `DEVELOPER`
+ * may modify only comments they authored (`authorId` matches JWT `userId`).
+ * Concurrent **`PATCH`** and **`DELETE`** operations on the same comment
+ * serialize via PostgreSQL `FOR UPDATE NOWAIT` and return **409** with a
+ * generic retry message when the row lock is busy.
  */
 @ApiTags('Comments')
 @ApiBearerAuth()
@@ -82,12 +89,18 @@ export class CommentController {
     @Body() dto: UpdateCommentDto,
     @Req() req: Request,
   ): Promise<Comment> {
-    const comment = await this.commentService.update(ticketId, commentId, dto);
+    const jwtUser = req.user as { userId: number; role: Role };
+    const comment = await this.commentService.update(
+      ticketId,
+      commentId,
+      dto,
+      { userId: jwtUser.userId, role: jwtUser.role },
+    );
     await this.auditLogService.log({
       action: AuditAction.UPDATE,
       entityType: 'COMMENT',
       entityId: commentId,
-      performedBy: (req.user as { userId: number }).userId,
+      performedBy: jwtUser.userId,
       actor: 'USER',
     });
     return comment;
@@ -103,12 +116,16 @@ export class CommentController {
     @Param('commentId', ParseIntPipe) commentId: number,
     @Req() req: Request,
   ): Promise<void> {
-    await this.commentService.remove(ticketId, commentId);
+    const jwtUser = req.user as { userId: number; role: Role };
+    await this.commentService.remove(ticketId, commentId, {
+      userId: jwtUser.userId,
+      role: jwtUser.role,
+    });
     await this.auditLogService.log({
       action: AuditAction.DELETE,
       entityType: 'COMMENT',
       entityId: commentId,
-      performedBy: (req.user as { userId: number }).userId,
+      performedBy: jwtUser.userId,
       actor: 'USER',
     });
   }

@@ -1,6 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository, OptimisticLockVersionMismatchError } from 'typeorm';
+import {
+  Repository,
+  OptimisticLockVersionMismatchError,
+  DataSource,
+  QueryFailedError,
+} from 'typeorm';
 import {
   NotFoundException,
   BadRequestException,
@@ -17,6 +22,7 @@ import { TicketPriority } from './enums/ticket-priority.enum';
 import { TicketType } from './enums/ticket-type.enum';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
+import { PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE } from '../common/pg-nowait-row-lock';
 
 const now = new Date();
 
@@ -47,6 +53,11 @@ describe('TicketService', () => {
   let projectService: jest.Mocked<ProjectService>;
   let userService: jest.Mocked<UserService>;
   let auditLogService: jest.Mocked<AuditLogService>;
+  let txnTicketManager: {
+    findOne: jest.Mock;
+    save: jest.Mock;
+    createQueryBuilder: jest.Mock;
+  };
 
   const mockUserRepoQb = () => {
     const qb = {
@@ -67,6 +78,23 @@ describe('TicketService', () => {
   };
 
   beforeEach(async () => {
+    txnTicketManager = {
+      findOne: jest.fn(),
+      save: jest.fn(),
+      createQueryBuilder: jest.fn(),
+    };
+    const queryRunnerStub = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      startTransaction: jest.fn().mockResolvedValue(undefined),
+      commitTransaction: jest.fn().mockResolvedValue(undefined),
+      rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+      release: jest.fn().mockResolvedValue(undefined),
+      manager: txnTicketManager,
+    };
+    const dataSourceStub = {
+      createQueryRunner: jest.fn().mockReturnValue(queryRunnerStub),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         TicketService,
@@ -100,6 +128,10 @@ describe('TicketService', () => {
         {
           provide: AuditLogService,
           useValue: { log: jest.fn().mockResolvedValue({}) },
+        },
+        {
+          provide: DataSource,
+          useValue: dataSourceStub,
         },
       ],
     }).compile();
@@ -223,77 +255,81 @@ describe('TicketService', () => {
   describe('update', () => {
     it('should update and return the modified ticket', async () => {
       const updated = { ...mockTicket, title: 'New title' };
-      repo.findOneBy.mockResolvedValue({ ...mockTicket });
-      repo.save.mockResolvedValue(updated);
+      txnTicketManager.findOne.mockResolvedValue({ ...mockTicket });
+      txnTicketManager.save.mockResolvedValue(updated);
 
       const result = await service.update(1, { title: 'New title' });
       expect(result.title).toBe('New title');
+      expect(txnTicketManager.findOne).toHaveBeenCalledWith(Ticket, {
+        where: { id: 1 },
+        lock: { mode: 'pessimistic_write', onLocked: 'nowait' },
+      });
     });
 
     it('should reject updates on a DONE ticket', async () => {
-      repo.findOneBy.mockResolvedValue({ ...mockTicket, status: TicketStatus.DONE });
+      txnTicketManager.findOne.mockResolvedValue({ ...mockTicket, status: TicketStatus.DONE });
       await expect(service.update(1, { title: 'Change' })).rejects.toThrow(BadRequestException);
     });
 
     it('should reject backward status transitions', async () => {
-      repo.findOneBy.mockResolvedValue({ ...mockTicket, status: TicketStatus.IN_PROGRESS });
+      txnTicketManager.findOne.mockResolvedValue({ ...mockTicket, status: TicketStatus.IN_PROGRESS });
       await expect(service.update(1, { status: TicketStatus.TODO })).rejects.toThrow(BadRequestException);
     });
 
     it('should allow forward status transitions', async () => {
       const ticket = { ...mockTicket, status: TicketStatus.TODO };
       const updated = { ...ticket, status: TicketStatus.IN_PROGRESS };
-      repo.findOneBy.mockResolvedValue(ticket);
-      repo.save.mockResolvedValue(updated);
+      txnTicketManager.findOne.mockResolvedValue(ticket);
+      txnTicketManager.save.mockResolvedValue(updated);
 
       const result = await service.update(1, { status: TicketStatus.IN_PROGRESS });
       expect(result.status).toBe(TicketStatus.IN_PROGRESS);
     });
 
     it('should reject same-status transitions', async () => {
-      repo.findOneBy.mockResolvedValue({ ...mockTicket, status: TicketStatus.IN_REVIEW });
+      txnTicketManager.findOne.mockResolvedValue({ ...mockTicket, status: TicketStatus.IN_REVIEW });
       await expect(service.update(1, { status: TicketStatus.IN_REVIEW })).rejects.toThrow(BadRequestException);
     });
 
     it('should handle partial updates (no status change)', async () => {
       const updated = { ...mockTicket, priority: TicketPriority.CRITICAL };
-      repo.findOneBy.mockResolvedValue({ ...mockTicket });
-      repo.save.mockResolvedValue(updated);
+      txnTicketManager.findOne.mockResolvedValue({ ...mockTicket });
+      txnTicketManager.save.mockResolvedValue(updated);
 
       const result = await service.update(1, { priority: TicketPriority.CRITICAL });
       expect(result.priority).toBe(TicketPriority.CRITICAL);
     });
 
     it('should throw NotFoundException when ticket does not exist', async () => {
-      repo.findOneBy.mockResolvedValue(null);
+      txnTicketManager.findOne.mockResolvedValue(null);
       await expect(service.update(999, { title: 'X' } as UpdateTicketDto)).rejects.toThrow(NotFoundException);
     });
 
     it('should reject DONE transition when unresolved blockers exist', async () => {
       const inReview = { ...mockTicket, status: TicketStatus.IN_REVIEW };
-      repo.findOneBy.mockResolvedValue(inReview);
+      txnTicketManager.findOne.mockResolvedValue(inReview);
 
       const qb = {
         innerJoin: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         getCount: jest.fn().mockResolvedValue(2),
       };
-      repo.createQueryBuilder.mockReturnValue(qb as never);
+      txnTicketManager.createQueryBuilder.mockReturnValue(qb as never);
 
       await expect(service.update(1, { status: TicketStatus.DONE })).rejects.toThrow(BadRequestException);
     });
 
     it('should allow DONE transition when all blockers are DONE', async () => {
       const inReview = { ...mockTicket, status: TicketStatus.IN_REVIEW };
-      repo.findOneBy.mockResolvedValue(inReview);
+      txnTicketManager.findOne.mockResolvedValue(inReview);
 
       const qb = {
         innerJoin: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         getCount: jest.fn().mockResolvedValue(0),
       };
-      repo.createQueryBuilder.mockReturnValue(qb as never);
-      repo.save.mockResolvedValue({ ...inReview, status: TicketStatus.DONE });
+      txnTicketManager.createQueryBuilder.mockReturnValue(qb as never);
+      txnTicketManager.save.mockResolvedValue({ ...inReview, status: TicketStatus.DONE });
 
       const result = await service.update(1, { status: TicketStatus.DONE });
       expect(result.status).toBe(TicketStatus.DONE);
@@ -301,8 +337,8 @@ describe('TicketService', () => {
 
     it('should reset isOverdue when priority is set manually', async () => {
       const overdue = { ...mockTicket, isOverdue: true, priority: TicketPriority.CRITICAL };
-      repo.findOneBy.mockResolvedValue({ ...overdue });
-      repo.save.mockImplementation(async (t) => t as Ticket);
+      txnTicketManager.findOne.mockResolvedValue({ ...overdue });
+      txnTicketManager.save.mockImplementation(async (Entity, t: Ticket) => t);
 
       const result = await service.update(1, { priority: TicketPriority.LOW });
       expect(result.isOverdue).toBe(false);
@@ -310,13 +346,28 @@ describe('TicketService', () => {
     });
 
     it('should throw ConflictException on optimistic lock version mismatch', async () => {
-      repo.findOneBy.mockResolvedValue({ ...mockTicket });
-      repo.save.mockRejectedValue(
+      txnTicketManager.findOne.mockResolvedValue({ ...mockTicket });
+      txnTicketManager.save.mockRejectedValue(
         new OptimisticLockVersionMismatchError('Ticket', 1, 2),
       );
 
       await expect(service.update(1, { title: 'Race' })).rejects.toThrow(
         ConflictException,
+      );
+    });
+
+    it('should throw ConflictException when the pessimistic NOWAIT row lock cannot be acquired', async () => {
+      txnTicketManager.findOne.mockRejectedValue(
+        Object.assign(new QueryFailedError('', [], new Error()), {
+          driverError: { code: '55P03' },
+        }),
+      );
+
+      await expect(service.update(1, { title: 'X' })).rejects.toThrow(
+        ConflictException,
+      );
+      await expect(service.update(1, { title: 'X' })).rejects.toThrow(
+        PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE,
       );
     });
   });

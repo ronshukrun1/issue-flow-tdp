@@ -3,11 +3,16 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Inject,
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, OptimisticLockVersionMismatchError } from 'typeorm';
+import {
+  Repository,
+  OptimisticLockVersionMismatchError,
+  DataSource,
+} from 'typeorm';
 import { Comment } from './comment.entity';
 import { CreateCommentDto } from './dto/create-comment.dto';
 import { UpdateCommentDto } from './dto/update-comment.dto';
@@ -15,6 +20,20 @@ import { extractMentions } from './mention.util';
 import { TicketService } from '../ticket/ticket.service';
 import { UserService } from '../user/user.service';
 import { User } from '../user/user.entity';
+import {
+  PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE,
+  isPgLockNotAvailableError,
+} from '../common/pg-nowait-row-lock';
+import { Role } from '../user/role.enum';
+
+/** Authenticated caller context (`req.user`). */
+export interface CommentMutationActor {
+  userId: number;
+  role: Role;
+}
+
+const COMMENT_MODIFY_FORBIDDEN_MESSAGE =
+  'You are not allowed to modify this comment.';
 
 /**
  * Encapsulates all business logic for comments and `@username` mentions.
@@ -22,6 +41,11 @@ import { User } from '../user/user.entity';
  * Every create/update operation automatically parses the comment body,
  * resolves mentioned usernames against the database, and persists the
  * `mentionedUsers` join-table entries.
+ *
+ * **`PATCH` / `DELETE` mutations:** `ADMIN` may edit or remove any comment;
+ * `DEVELOPER` only their own (`comment.authorId`). Contention on the row
+ * lock (**`55P03`**) maps to **409** with a generic retry message; forbidden
+ * ownership maps to **403** with the fixed permission string.
  */
 @Injectable()
 export class CommentService {
@@ -31,6 +55,7 @@ export class CommentService {
     private readonly ticketService: TicketService,
     @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
+    private readonly dataSource: DataSource,
   ) {}
 
   /**
@@ -106,26 +131,61 @@ export class CommentService {
    * @param dto       - Validated update payload.
    * @returns The updated {@link Comment} entity (with mentionedUsers).
    * @throws {NotFoundException} When the comment doesn't exist or doesn't belong to the ticket.
+   * @throws {ForbiddenException} When a DEVELOPER attempts to mutate another author's comment.
+   * @throws {ConflictException} On pessimistic **`NOWAIT`** contention (SQLSTATE `55P03`) or optimistic version mismatch.
    */
   async update(
     ticketId: number,
     commentId: number,
     dto: UpdateCommentDto,
+    actor: CommentMutationActor,
   ): Promise<Comment> {
-    const comment = await this.findCommentForTicket(ticketId, commentId);
-
-    comment.content = dto.content;
-    comment.mentionedUsers = await this.resolveMentions(dto.content);
-
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
     try {
-      await this.commentRepository.save(comment);
-    } catch (error: unknown) {
-      if (error instanceof OptimisticLockVersionMismatchError) {
-        throw new ConflictException(
-          'Comment was modified by another user. Please reload and retry.',
+      let comment: Comment | null;
+      try {
+        comment = await queryRunner.manager.findOne(Comment, {
+          where: { id: commentId, ticketId },
+          relations: ['mentionedUsers'],
+          lock: { mode: 'pessimistic_write', onLocked: 'nowait' },
+        });
+      } catch (error: unknown) {
+        if (isPgLockNotAvailableError(error)) {
+          throw new ConflictException(PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE);
+        }
+        throw error;
+      }
+
+      if (!comment) {
+        throw new NotFoundException(
+          `Comment with ID ${commentId} not found for ticket ${ticketId}`,
         );
       }
+
+      CommentService.assertMayMutateComment(comment, actor);
+
+      comment.content = dto.content;
+      comment.mentionedUsers = await this.resolveMentions(dto.content);
+
+      try {
+        await queryRunner.manager.save(Comment, comment);
+      } catch (error: unknown) {
+        if (error instanceof OptimisticLockVersionMismatchError) {
+          throw new ConflictException(
+            'Comment was modified by another user. Please reload and retry.',
+          );
+        }
+        throw error;
+      }
+
+      await queryRunner.commitTransaction();
+    } catch (error: unknown) {
+      await queryRunner.rollbackTransaction();
       throw error;
+    } finally {
+      await queryRunner.release();
     }
 
     const result = await this.commentRepository.findOneOrFail({
@@ -138,13 +198,53 @@ export class CommentService {
   /**
    * Permanently deletes a comment.
    *
+   * Runs in a transaction with **`SELECT ... FOR UPDATE NOWAIT`** on the
+   * comment row so concurrent **`PATCH`** / **`DELETE`** operations serialize.
+   *
    * @param ticketId  - The parent ticket (used for ownership validation).
    * @param commentId - The comment to delete.
    * @throws {NotFoundException} When the comment doesn't exist or doesn't belong to the ticket.
+   * @throws {ForbiddenException} When a DEVELOPER attempts to delete another author's comment.
+   * @throws {ConflictException} When the pessimistic **`NOWAIT`** row lock cannot be acquired (SQLSTATE `55P03`).
    */
-  async remove(ticketId: number, commentId: number): Promise<void> {
-    const comment = await this.findCommentForTicket(ticketId, commentId);
-    await this.commentRepository.remove(comment);
+  async remove(
+    ticketId: number,
+    commentId: number,
+    actor: CommentMutationActor,
+  ): Promise<void> {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+    try {
+      let comment: Comment | null;
+      try {
+        comment = await queryRunner.manager.findOne(Comment, {
+          where: { id: commentId, ticketId },
+          lock: { mode: 'pessimistic_write', onLocked: 'nowait' },
+        });
+      } catch (error: unknown) {
+        if (isPgLockNotAvailableError(error)) {
+          throw new ConflictException(PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE);
+        }
+        throw error;
+      }
+
+      if (!comment) {
+        throw new NotFoundException(
+          `Comment with ID ${commentId} not found for ticket ${ticketId}`,
+        );
+      }
+
+      CommentService.assertMayMutateComment(comment, actor);
+
+      await queryRunner.manager.remove(comment);
+      await queryRunner.commitTransaction();
+    } catch (error: unknown) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   /**
@@ -200,21 +300,15 @@ export class CommentService {
   }
 
   /**
-   * Fetches a comment and asserts it belongs to the given ticket.
+   * ADMIN may mutate any comment; DEVELOPER only where `comment.authorId === actor.userId`.
    */
-  private async findCommentForTicket(
-    ticketId: number,
-    commentId: number,
-  ): Promise<Comment> {
-    const comment = await this.commentRepository.findOne({
-      where: { id: commentId },
-      relations: ['mentionedUsers'],
-    });
-    if (!comment || comment.ticketId !== ticketId) {
-      throw new NotFoundException(
-        `Comment with ID ${commentId} not found for ticket ${ticketId}`,
-      );
+  private static assertMayMutateComment(
+    comment: Comment,
+    actor: CommentMutationActor,
+  ): void {
+    if (actor.role === Role.ADMIN) return;
+    if (comment.authorId !== actor.userId) {
+      throw new ForbiddenException(COMMENT_MODIFY_FORBIDDEN_MESSAGE);
     }
-    return comment;
   }
 }
