@@ -235,7 +235,7 @@ Each `curl` command prints the HTTP status code alongside the expected status, a
   - DONE transition blocked if unresolved blockers exist (single efficient COUNT query).
 - **Attachment Module** (`src/attachment/`):
   - `Attachment` entity — `id`, `filename`, `contentType`, `size`, `ticketId`, `createdAt`.
-  - `POST /tickets/:ticketId/attachments` — multipart upload with `ParseFilePipe` (10 MB max, restricted MIME types). Path traversal protection via `path.basename()`.
+  - `POST /tickets/:ticketId/attachments` — multipart upload with `ParseFilePipe`: **10 MiB max (inclusive)**; **TDP 3.3 MIME allowlist** enforced on **`file.mimetype`** (**`image/png`**, **`image/jpeg`**, **`application/pdf`**, **`text/plain`** — including values with parameters such as `text/plain; charset=utf-8`). **`image/jpg`** is **not** accepted (use **`image/jpeg`**). Validation is explicit allowlisting, not Nest’s buffer/magic-number **`FileTypeValidator`**, so plain-text uploads are not falsely rejected. Path traversal protection via `path.basename()` on the stored filename.
   - `DELETE /tickets/:ticketId/attachments/:attachmentId`.
 - **CSV Export & Import**:
   - `GET /tickets/export?projectId=` — downloadable CSV with **exactly 7** TDP-specified fields: id, title, description, status, priority, type, assigneeId (no extra columns).

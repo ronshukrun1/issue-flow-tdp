@@ -2802,3 +2802,55 @@ Endpoints (**`POST /tickets/import`**, **`GET /tickets/export`**) and payloads w
 
 ---
 
+## Attachments — TDP 3.3 MIME validation (`text/plain`)
+
+**Date:** Sunday, May 24, 2026  
+**Model:** Composer (Cursor Agent session)
+
+### Context
+
+During manual **Postman** testing, uploading a valid **`notes.txt`** with reported MIME **`text/plain`** returned **400 Bad Request** with a **`FileTypeValidator`**-style message comparing the current type to a regex of allowed types (including **`text/plain`** in the pattern). The upload still failed — behaviour inconsistent with **TDP 3.3**, which allows **`image/png`**, **`image/jpeg`**, **`application/pdf`**, and **`text/plain`**.
+
+### Root cause
+
+**Nest’s built-in `FileTypeValidator`** (from **`@nestjs/common`**) validates using the **`file-type`** package (magic bytes / buffer sniffing), not only **`file.mimetype`**. For **`text/plain`** uploads the buffer is often not classified as a recognised binary format, so validation fails even when the client’s **`Content-Type`** is correct and the regex lists **`text/plain`**. The error message is therefore misleading: it mentions MIME/regex, but the rejection is driven by content sniffing, not a simple allowlist match on **`mimetype`**.
+
+### Goal
+
+- Enforce **exactly** the four TDP 3.3 types, using an **explicit allowlist** on **`file.mimetype`** (normalised: lowercase primary type, strip **`; charset=...`** parameters).
+- **Reject `image/jpg`** (non-standard); only **`image/jpeg`** is allowed.
+- Keep **10 MiB inclusive** maximum size, metadata-only storage, no new endpoints, unchanged **POST/DELETE** paths and response shape **`{ id, ticketId, filename, contentType }`**, existing audit behaviour.
+
+### Implementation summary
+
+1. **Added** [`src/attachment/attachment-upload.validators.ts`](src/attachment/attachment-upload.validators.ts) (referenced by [`attachment.controller.ts`](src/attachment/attachment.controller.ts) but previously missing from the tree, which broke **`nest build`**):
+   - **`InclusiveMaxAttachmentSizeValidator`** — **`file.size <= 10 * 1024 * 1024`** (inclusive); rejects missing/invalid **`size`**.
+   - **`AllowedAttachmentMimeTypeValidator`** — allowlist **`image/png`**, **`image/jpeg`**, **`application/pdf`**, **`text/plain`** after **`normaliseAttachmentMimeBase()`**; no **`FileTypeValidator`**.
+   - Exported **`MAX_ATTACHMENT_BYTES`**, **`isAllowedAttachmentMimeBase`**, **`normaliseAttachmentMimeBase`** for tests and clarity.
+
+2. **`ParseFilePipe`** order: **size** first, **MIME** second (fail fast on oversized files).
+
+3. **Tests** — [`src/attachment/attachment-upload.validators.spec.ts`](src/attachment/attachment-upload.validators.spec.ts): all four allowed types (including **`text/plain`** + charset variants), **`image/jpg`** rejected, unsupported types, inclusive 10 MiB boundary, **`ParseFilePipe`** missing file (**`File is required`**), oversize and bad MIME **400**. Existing [`attachment.service.spec.ts`](src/attachment/attachment.service.spec.ts) **`upload`** **`it.each`** already covers the four MIME types, path traversal, and missing/soft-deleted ticket via **`ticketService.findOne`**; [`attachment.controller.spec.ts`](src/attachment/attachment.controller.spec.ts) unchanged for delegation/audit (**`ParseFilePipe`** is not run when the controller method is invoked directly in unit tests).
+
+4. **Docs** — [`run.md`](run.md) Phase 3b: explicit TDP MIME list, **`text/plain`** note, **`image/jpg`** vs **`image/jpeg`**, and rationale (mimetype allowlist vs magic-number validator).
+
+### API contract confirmation
+
+- **`POST /tickets/:ticketId/attachments`** and **`DELETE /tickets/:ticketId/attachments/:attachmentId`** unchanged.
+- Upload response fields remain aligned with README (**`size`** / **`createdAt`** still excluded from JSON via entity **`@Exclude()`**).
+- No file storage, download, or **GET** attachments; no ownership/role changes in this task.
+- **10 MiB** limit still enforced; **`image/png`** and the other three MIME types pass when **`mimetype`** matches after normalisation.
+
+### Files touched
+
+| File | Change |
+|------|--------|
+| `src/attachment/attachment-upload.validators.ts` | **New** — explicit MIME allowlist + inclusive size |
+| `src/attachment/attachment-upload.validators.spec.ts` | **New** — validator + **`ParseFilePipe`** coverage |
+| `run.md` | TDP 3.3 attachment MIME / validation notes |
+| `prompts.md` | This log entry |
+
+*(Controller and service already referenced this module; implementing the validators file restores **`nest build`** and fixes **`text/plain`.)*
+
+---
+

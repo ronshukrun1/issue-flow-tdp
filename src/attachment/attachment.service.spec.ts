@@ -66,15 +66,41 @@ describe('AttachmentService', () => {
   // ---------- upload ----------
 
   describe('upload', () => {
-    it('should validate the ticket and save attachment metadata', async () => {
-      ticketService.findOne.mockResolvedValue({} as never);
-      repo.create.mockReturnValue(mockAttachment);
-      repo.save.mockResolvedValue(mockAttachment);
+    it.each([
+      ['screenshot.png', 'image/png', 'image/png'],
+      ['photo.jpg', 'image/jpeg', 'image/jpeg'],
+      ['doc.pdf', 'application/pdf', 'application/pdf'],
+      ['notes.txt', 'text/plain', 'text/plain'],
+      ['notes.txt', 'text/plain; charset=utf-8', 'text/plain; charset=utf-8'],
+    ])(
+      'should persist attachment with contentType matching upload for %s (%s)',
+      async (filename, mimetype, expectedStoredContentType) => {
+        ticketService.findOne.mockResolvedValue({} as never);
+        const saved: Attachment = {
+          ...mockAttachment,
+          filename,
+          contentType: expectedStoredContentType,
+          size: 10,
+        };
+        repo.create.mockReturnValue(saved);
+        repo.save.mockResolvedValue(saved);
 
-      const result = await service.upload(1, makeFile());
-      expect(result).toEqual(mockAttachment);
-      expect(ticketService.findOne).toHaveBeenCalledWith(1);
-    });
+        const result = await service.upload(
+          1,
+          makeFile({ originalname: filename, mimetype, size: 10 }),
+        );
+
+        expect(result).toEqual(saved);
+        expect(ticketService.findOne).toHaveBeenCalledWith(1);
+        expect(repo.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            filename,
+            contentType: expectedStoredContentType,
+            size: 10,
+          }),
+        );
+      },
+    );
 
     it('should strip path traversal sequences from filename', async () => {
       ticketService.findOne.mockResolvedValue({} as never);
@@ -91,7 +117,7 @@ describe('AttachmentService', () => {
       );
     });
 
-    it('should throw NotFoundException when ticket does not exist', async () => {
+    it('should throw NotFoundException when ticket does not exist (including soft-deleted)', async () => {
       ticketService.findOne.mockRejectedValue(
         new NotFoundException('Ticket with ID 999 not found'),
       );

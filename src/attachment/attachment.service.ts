@@ -11,9 +11,10 @@ import { TicketService } from '../ticket/ticket.service';
 /**
  * Manages file attachment metadata for tickets.
  *
- * File size and MIME type validation is enforced at the controller
- * boundary via `ParseFilePipe`. This service handles ticket existence
- * checks, path-traversal sanitisation, and persistence.
+ * File size and MIME type validation is enforced at the controller boundary via
+ * `ParseFilePipe` (10 MiB max inclusive; TDP 3.3 MIME allowlist including **`text/plain`**
+ * on **`file.mimetype`**). This service handles ticket existence checks,
+ * path-traversal sanitisation, and persistence.
  */
 @Injectable()
 export class AttachmentService {
@@ -30,7 +31,7 @@ export class AttachmentService {
    * to strip any directory-traversal sequences.
    *
    * @param ticketId - The ticket to attach the file to.
-   * @param file     - The uploaded file (already validated by ParseFilePipe).
+   * @param file     - The uploaded file (size and MIME already validated by `ParseFilePipe`).
    * @returns The persisted {@link Attachment} metadata.
    * @throws {NotFoundException} When the ticket does not exist.
    */
