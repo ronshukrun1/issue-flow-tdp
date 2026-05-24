@@ -213,6 +213,10 @@ describe('CommentService', () => {
 
       const result = await service.update(1, 1, dto, actorAliceDeveloper);
       expect(result.content).toBe('Updated @alice');
+      expect(txnCommentManager.findOne).toHaveBeenCalledWith(Comment, {
+        where: { id: 1, ticketId: 1 },
+        lock: { mode: 'pessimistic_write', onLocked: 'nowait' },
+      });
       expect(userService.findByUsernames).toHaveBeenCalledWith(['alice']);
     });
 

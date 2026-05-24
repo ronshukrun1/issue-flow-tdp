@@ -126,6 +126,11 @@ export class CommentService {
   /**
    * Updates a comment's content and re-evaluates its mentions.
    *
+   * The pessimistic **`FOR UPDATE NOWAIT`** lock is taken on **`comments`** only
+   * (no `mentionedUsers` join), avoiding PostgreSQL’s restriction against
+   * locking the nullable side of an outer join. Mentions are resolved and the
+   * join table updated after the lock is acquired, still inside the transaction.
+   *
    * @param ticketId  - The parent ticket (used for ownership validation).
    * @param commentId - The comment to update.
    * @param dto       - Validated update payload.
@@ -148,7 +153,6 @@ export class CommentService {
       try {
         comment = await queryRunner.manager.findOne(Comment, {
           where: { id: commentId, ticketId },
-          relations: ['mentionedUsers'],
           lock: { mode: 'pessimistic_write', onLocked: 'nowait' },
         });
       } catch (error: unknown) {
