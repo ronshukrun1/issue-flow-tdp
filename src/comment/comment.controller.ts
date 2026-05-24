@@ -12,6 +12,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiEmptyOk } from '../common/swagger/api-empty-ok.decorator';
 import { Request } from 'express';
 import { CommentService } from './comment.service';
 import { CreateCommentDto } from './dto/create-comment.dto';
@@ -84,6 +85,7 @@ export class CommentController {
    */
   @Patch(':commentId')
   @HttpCode(HttpStatus.OK)
+  @ApiEmptyOk()
   async update(
     @Param('ticketId', ParseIntPipe) ticketId: number,
     @Param('commentId', ParseIntPipe) commentId: number,

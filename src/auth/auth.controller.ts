@@ -1,9 +1,11 @@
 import { Controller, Post, Get, Body, Req, HttpCode, HttpStatus } from '@nestjs/common';
-import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth, ApiOkResponse } from '@nestjs/swagger';
 import { Request } from 'express';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
+import { LoginResponseDto } from './dto/login-response.dto';
 import { Public } from '../common/decorators/public.decorator';
+import { ApiEmptyOk } from '../common/swagger/api-empty-ok.decorator';
 
 /**
  * Handles authentication-related HTTP endpoints.
@@ -22,6 +24,7 @@ export class AuthController {
   @Public()
   @Post('login')
   @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({ type: LoginResponseDto })
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
   }
@@ -46,6 +49,7 @@ export class AuthController {
    */
   @Post('logout')
   @HttpCode(HttpStatus.OK)
+  @ApiEmptyOk()
   logout(@Req() req: Request): void {
     const authHeader = req.headers.authorization;
     if (authHeader) {

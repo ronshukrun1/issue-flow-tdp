@@ -21,7 +21,9 @@ import {
   MaxTicketCsvSizeValidator,
   CsvOriginalNameValidator,
 } from './csv-import-file.validators';
-import { ApiTags, ApiBearerAuth, ApiConsumes, ApiBody } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth, ApiConsumes, ApiBody, ApiOkResponse } from '@nestjs/swagger';
+import { ApiEmptyOk } from '../common/swagger/api-empty-ok.decorator';
+import { CsvImportSummaryDto } from './dto/csv-import-summary.dto';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Request, Response } from 'express';
 import { TicketService } from './ticket.service';
@@ -102,6 +104,7 @@ export class TicketController {
    */
   @Post('import')
   @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({ type: CsvImportSummaryDto })
   @UseInterceptors(FileInterceptor('file'))
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -173,6 +176,7 @@ export class TicketController {
    */
   @Patch(':ticketId')
   @HttpCode(HttpStatus.OK)
+  @ApiEmptyOk()
   async update(
     @Param('ticketId', ParseIntPipe) ticketId: number,
     @Body() dto: UpdateTicketDto,

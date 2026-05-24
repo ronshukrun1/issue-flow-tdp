@@ -14,6 +14,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiEmptyOk } from '../common/swagger/api-empty-ok.decorator';
 import { Request } from 'express';
 import { ProjectService } from './project.service';
 import { CreateProjectDto } from './dto/create-project.dto';
@@ -110,6 +111,7 @@ export class ProjectController {
    */
   @Patch(':projectId')
   @HttpCode(HttpStatus.OK)
+  @ApiEmptyOk()
   async update(
     @Param('projectId', ParseIntPipe) projectId: number,
     @Body() dto: UpdateProjectDto,

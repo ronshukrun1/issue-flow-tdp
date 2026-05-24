@@ -13,6 +13,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiEmptyOk } from '../common/swagger/api-empty-ok.decorator';
 import { Request } from 'express';
 import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -105,6 +106,7 @@ export class UserController {
    */
   @Post('update/:userId')
   @HttpCode(HttpStatus.OK)
+  @ApiEmptyOk()
   async update(
     @Param('userId', ParseIntPipe) userId: number,
     @Body() dto: UpdateUserDto,

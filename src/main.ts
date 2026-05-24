@@ -28,7 +28,12 @@ async function bootstrap() {
 
   const config = new DocumentBuilder()
     .setTitle('IssueFlow API')
-    .setDescription('Ticket Management Backend Platform Specification')
+    .setDescription(
+      'Ticket Management Backend — REST contract aligned with README.md. ' +
+        'Mutating PATCH/update endpoints return 200 OK with an empty body. ' +
+        'POST /tickets/import errors use structured objects: { row, title, field, message }. ' +
+        'Authenticate via POST /auth/login, then Authorize with Bearer <JWT>.',
+    )
     .setVersion('1.0')
     .addBearerAuth()
     .build();
