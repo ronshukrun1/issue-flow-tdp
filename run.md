@@ -103,6 +103,8 @@ Use the **Authorize** button (top-right) to enter a Bearer JWT token and test pr
 npm run test
 ```
 
+This runs **all** `*.spec.ts` files under `src/`, including the full-flow **`src/integration/issueflow-flow.integration.spec.ts`** harness (`Test.createTestingModule` with mocked TypeORM repositories). Any service under test that injects **`DataSource`** (for example **`TicketService`**, **`CommentService`**) must have a **`DataSource`** stub in that module’s `providers`; missing core providers can surface as deep Nest injector errors rather than a clear “cannot resolve dependency” message.
+
 ### Watch mode
 
 ```bash
@@ -236,8 +238,9 @@ Each `curl` command prints the HTTP status code alongside the expected status, a
   - `POST /tickets/:ticketId/attachments` — multipart upload with `ParseFilePipe` (10 MB max, restricted MIME types). Path traversal protection via `path.basename()`.
   - `DELETE /tickets/:ticketId/attachments/:attachmentId`.
 - **CSV Export & Import**:
-  - `GET /tickets/export?projectId=` — downloadable CSV with 7 TDP-specified fields: id, title, description, status, priority, type, assigneeId.
-  - `POST /tickets/import` — stream-based CSV parser, per-row validation, partial success with summary `{ created, failed, errors }`. Each successfully persisted row records a **`CREATE`** audit for **`TICKET`** with `actor: USER` and `performedBy` set to the authenticated importer’s `userId` (before optional auto-assignment **`AUTO_ASSIGN`**).
+  - `GET /tickets/export?projectId=` — downloadable CSV with **exactly 7** TDP-specified fields: id, title, description, status, priority, type, assigneeId (no extra columns).
+  - `POST /tickets/import` (`multipart/form-data`: **`file`** + **`projectId`**) — CSV parser loads rows with header semantics (`columns: true`); **`projectId`** is always taken from the form field for every row (CSV does not require a **`projectId`** column; any such column values are ignored). If a **`id`** column appears, it is **ignored** — imported rows always create **new** tickets with database-generated IDs. **Limits:** **`text/csv`** MIME type validation, **`originalname`** must end with `.csv`, **maximum file size 10 MB** (inclusive — same magnitude as attachments), **maximum 10,000 data rows** (excluding header; imports over this limit fail entirely with **400 Bad Request**, no partial import). Malformed CSV or parse errors return **400** with `"Invalid CSV format"`. Row-level failures use the existing summary `{ created, failed, errors }` with validations aligned to **`POST /tickets`** / **`CreateTicketDto`** (title/description length bounds, enums, optional **`assigneeId`** validated as integer and existing user). **`DONE`** is allowed on import. Dependencies are **not** evaluated during import (unchanged README contract).
+  - Each successfully persisted imported row records a **`CREATE`** audit for **`TICKET`** with `actor: USER` and `performedBy` set to the authenticated importer’s `userId` (before optional auto-assignment **`AUTO_ASSIGN`**).
 
 ### Phase 4 — Auto-Escalation, Auto-Assignment & Audit Logs
 

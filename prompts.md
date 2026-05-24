@@ -2759,3 +2759,46 @@ ORDER BY COUNT(ticket.id) ASC, "user"."createdAt" ASC
 
 ---
 
+## Ticket CSV import hardening (assignment-aligned)
+
+**Date:** Sunday, May 24, 2026  
+**Model:** Composer (Cursor Agent session)
+
+### Prompt
+
+> Improve the Ticket CSV import implementation strictly per the README / assignment contract, without changing endpoint paths or response shapes, without adding authorization/ownership checks, preserving export (**exactly 7** columns: id, title, description, status, priority, type, assigneeId), multipart **`projectId`**, ignoring CSV **`id`**, allowing **`DONE`** and skipping dependency validation on import; keep auto-assignment when **`assigneeId`** is empty and **`TICKET` `CREATE`** audit logs for successful imports.
+>
+> Implemented requirements:
+>
+> - **Upload validation:** **`ParseFilePipe`** enforces **`text/csv`** (existing), **`originalname`** ends with `.csv`, and inclusive **10 MB** max size (**`MaxTicketCsvSizeValidator`** — same cap as attachments so up to 10 MB uploads are accepted).
+> - **Parse failures:** malformed CSV yields **400 Bad Request**, message **`Invalid CSV format`**, no crashes.
+> - **Global row cap:** more than **10,000 data rows** (header excluded) → **400**, no partial import.
+> - **Per-row validation** aligned with **`CreateTicketDto`** (title/description required + **1–255** / **1–5000** after trim; enum messages; **`assigneeId`** optional, integer-only, **`userService.findOne`** — missing user is a failed row); partial import with **`{ created, failed, errors }`** unchanged.
+>
+> Documentation: **`run.md`** — limits and multipart/projectId/id-ignore notes; **`prompts.md`** — this entry.
+
+### Changes Applied
+
+- **`TicketController.importCsv`** — adds **`ParseFilePipe`** validators: **`MaxTicketCsvSizeValidator`**, **`CsvOriginalNameValidator`**, existing **`FileTypeValidator`** (**`/^text\/csv$/`**).
+- **`TicketService.importFromCsv`** — rejects **`records.length > 10_000`** with **`BadRequestException`** before row processing; row validation mirrors **`CreateTicketDto`**; validates assignee existence when **`assigneeId`** present; **`id`** / **`projectId`** CSV fields never applied to **`create`**; **`Readable.from`** for parsing; catches unexpected parse errors as **`Invalid CSV format`**.
+- **`src/ticket/csv-import-file.validators.ts`** (+ unit spec): size and filename validators.
+- **Tests** — extended **`ticket.service.spec`** (**quoted commas**, enums, lengths, assignee failures, malformed CSV, **`>10000`** rows, ignore **`id`/projectId**, **`DONE`**); **`csv-import-file.validators.spec`**.
+
+### API Contract
+
+Endpoints (**`POST /tickets/import`**, **`GET /tickets/export`**) and payloads were **intentionally preserved** (multipart fields, **`{ created, failed, errors }`**, unchanged export columns). No new auth/ownership checks were added.
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `src/ticket/csv-import-file.validators.ts` | **New** — **10 MB** + **`.csv`** filename validators |
+| `src/ticket/csv-import-file.validators.spec.ts` | **New** — validator coverage |
+| `src/ticket/ticket.controller.ts` | **`ParseFilePipe`** stacking for import |
+| `src/ticket/ticket.service.ts` | Row limit, **`CreateTicketDto`**-aligned row checks, **`userService`** assignee verification, safer CSV parse boundary |
+| `src/ticket/ticket.service.spec.ts` | Import contract tests expanded |
+| `run.md` | CSV import limits and semantics |
+| `prompts.md` | This log entry |
+
+---
+

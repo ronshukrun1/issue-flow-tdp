@@ -31,6 +31,25 @@ import {
   PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE,
   isPgLockNotAvailableError,
 } from '../common/pg-nowait-row-lock';
+import { Readable } from 'stream';
+
+/** Maximum number of data rows (excluding the header) per ticket CSV import. */
+export const MAX_TICKET_CSV_IMPORT_ROWS = 10_000;
+
+/** Mirrors {@link CreateTicketDto} `@MaxLength(255)`. */
+const CREATE_TICKET_TITLE_MAX_LEN = 255;
+
+/** Mirrors {@link CreateTicketDto} `@MaxLength(5000)`. */
+const CREATE_TICKET_DESCRIPTION_MAX_LEN = 5000;
+
+const TICKET_CREATE_STATUS_ENUM_MSG =
+  'status must be one of: TODO, IN_PROGRESS, IN_REVIEW, DONE';
+
+const TICKET_CREATE_PRIORITY_ENUM_MSG =
+  'priority must be one of: LOW, MEDIUM, HIGH, CRITICAL';
+
+const TICKET_CREATE_TYPE_ENUM_MSG =
+  'type must be one of: BUG, FEATURE, TECHNICAL';
 
 /**
  * Encapsulates all business logic for ticket management.
@@ -425,15 +444,18 @@ export class TicketService {
   /**
    * Imports tickets from a CSV buffer into a project.
    *
-   * Uses a stream-based parser to avoid loading the entire file into
-   * memory at once. Each row is validated individually; invalid rows
-   * are collected in the `errors` array rather than aborting the import.
+   * Rows are validated like **`CreateTicketDto`**: lengths, enums, optional
+   * **`assigneeId`** checked as an integer referencing an existing user.
+   * Invalid rows increment **`failed`** and **`errors`**; valid rows persist.
+   * More than {@link MAX_TICKET_CSV_IMPORT_ROWS} **data rows** (after the header)
+   * or malformed CSV causes **`BadRequestException`** — no partial import in those cases.
    *
    * @param projectId         - The target project for imported tickets.
    * @param fileBuffer        - Raw CSV bytes from the uploaded file.
    * @param importedByUserId  - Authenticated user performing the import (audit `performedBy`).
    * @returns A summary with counts of created/failed rows and error messages.
    * @throws {NotFoundException} When the project does not exist.
+   * @throws {BadRequestException} When the CSV exceeds the allowed row count or cannot be parsed.
    */
   async importFromCsv(
     projectId: number,
@@ -450,21 +472,77 @@ export class TicketService {
     let failed = 0;
     const errors: string[] = [];
 
-    const records = await this.parseCsvStream(fileBuffer);
+    let records: Record<string, string>[];
+    try {
+      records = await this.parseCsvStream(fileBuffer);
+    } catch (error: unknown) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      throw new BadRequestException('Invalid CSV format');
+    }
+
+    if (records.length > MAX_TICKET_CSV_IMPORT_ROWS) {
+      throw new BadRequestException(
+        `Ticket CSV exceeds the maximum of ${MAX_TICKET_CSV_IMPORT_ROWS} data rows`,
+      );
+    }
 
     for (let i = 0; i < records.length; i++) {
       const row = records[i];
       const rowNum = i + 2;
       const rowErrors: string[] = [];
 
-      if (!row['title']?.trim()) rowErrors.push('title is required');
-      if (!row['description']?.trim()) rowErrors.push('description is required');
-      if (!validStatuses.has(row['status'] as TicketStatus))
-        rowErrors.push(`invalid status '${row['status']}'`);
-      if (!validPriorities.has(row['priority'] as TicketPriority))
-        rowErrors.push(`invalid priority '${row['priority']}'`);
-      if (!validTypes.has(row['type'] as TicketType))
-        rowErrors.push(`invalid type '${row['type']}'`);
+      // id / projectId may appear in the file — never used for persistence (new rows only).
+
+      const title = (row['title'] ?? '').trim();
+      const description = (row['description'] ?? '').trim();
+      const statusRaw = (row['status'] ?? '').trim();
+      const priorityRaw = (row['priority'] ?? '').trim();
+      const typeRaw = (row['type'] ?? '').trim();
+      const assigneeRaw = (row['assigneeId'] ?? '').trim();
+
+      if (!title) {
+        rowErrors.push('title is required');
+      } else if (title.length > CREATE_TICKET_TITLE_MAX_LEN) {
+        rowErrors.push(
+          `title must be shorter than or equal to ${CREATE_TICKET_TITLE_MAX_LEN} characters`,
+        );
+      }
+
+      if (!description) {
+        rowErrors.push('description is required');
+      } else if (description.length > CREATE_TICKET_DESCRIPTION_MAX_LEN) {
+        rowErrors.push(
+          `description must be shorter than or equal to ${CREATE_TICKET_DESCRIPTION_MAX_LEN} characters`,
+        );
+      }
+
+      if (!validStatuses.has(statusRaw as TicketStatus)) {
+        rowErrors.push(TICKET_CREATE_STATUS_ENUM_MSG);
+      }
+      if (!validPriorities.has(priorityRaw as TicketPriority)) {
+        rowErrors.push(TICKET_CREATE_PRIORITY_ENUM_MSG);
+      }
+      if (!validTypes.has(typeRaw as TicketType)) {
+        rowErrors.push(TICKET_CREATE_TYPE_ENUM_MSG);
+      }
+
+      let assigneeId: number | null = null;
+      if (assigneeRaw.length > 0) {
+        if (!/^-?\d+$/.test(assigneeRaw)) {
+          rowErrors.push('assigneeId must be a valid integer');
+        } else {
+          const parsedAssignee = Number(assigneeRaw);
+          if (
+            !Number.isSafeInteger(parsedAssignee)
+          ) {
+            rowErrors.push('assigneeId must be a valid integer');
+          } else {
+            assigneeId = parsedAssignee;
+          }
+        }
+      }
 
       if (rowErrors.length > 0) {
         failed++;
@@ -472,14 +550,29 @@ export class TicketService {
         continue;
       }
 
+      if (assigneeId !== null) {
+        try {
+          await this.userService.findOne(assigneeId);
+        } catch (error: unknown) {
+          if (error instanceof NotFoundException) {
+            failed++;
+            errors.push(
+              `Row ${rowNum}: Assignee with ID ${assigneeId} does not exist`,
+            );
+            continue;
+          }
+          throw error;
+        }
+      }
+
       const ticket = this.ticketRepository.create({
-        title: row['title'].trim(),
-        description: row['description'].trim(),
-        status: row['status'] as TicketStatus,
-        priority: row['priority'] as TicketPriority,
-        type: row['type'] as TicketType,
+        title,
+        description,
+        status: statusRaw as TicketStatus,
+        priority: priorityRaw as TicketPriority,
+        type: typeRaw as TicketType,
         projectId,
-        assigneeId: row['assigneeId'] ? Number(row['assigneeId']) : null,
+        assigneeId,
       });
 
       try {
@@ -516,16 +609,15 @@ export class TicketService {
   ): Promise<Record<string, string>[]> {
     return new Promise((resolve, reject) => {
       const records: Record<string, string>[] = [];
-      const { Readable } = require('stream') as typeof import('stream');
       const stream = Readable.from(buffer);
       const parser = stream.pipe(
         parse({ columns: true, skip_empty_lines: true, trim: true }),
       );
       parser.on('data', (row: Record<string, string>) => records.push(row));
       parser.on('end', () => resolve(records));
-      parser.on('error', () =>
-        reject(new BadRequestException('Invalid CSV format')),
-      );
+      parser.on('error', () => {
+        reject(new BadRequestException('Invalid CSV format'));
+      });
     });
   }
 

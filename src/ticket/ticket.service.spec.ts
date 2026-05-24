@@ -11,7 +11,7 @@ import {
   BadRequestException,
   ConflictException,
 } from '@nestjs/common';
-import { TicketService } from './ticket.service';
+import { TicketService, MAX_TICKET_CSV_IMPORT_ROWS } from './ticket.service';
 import { Ticket } from './ticket.entity';
 import { User } from '../user/user.entity';
 import { ProjectService } from '../project/project.service';
@@ -514,6 +514,9 @@ describe('TicketService', () => {
       expect(result.failed).toBe(1);
       expect(result.errors).toHaveLength(1);
       expect(result.errors[0]).toContain('Row 2');
+      expect(result.errors[0]).toContain(
+        'status must be one of: TODO, IN_PROGRESS, IN_REVIEW, DONE',
+      );
       expect(auditLogService.log).not.toHaveBeenCalled();
     });
 
@@ -545,6 +548,7 @@ describe('TicketService', () => {
 
     it('should skip auto-assign when assigneeId is provided in CSV', async () => {
       projectService.findOne.mockResolvedValue({} as never);
+      userService.findOne.mockResolvedValue({} as never);
       const assigned = { ...mockTicket, assigneeId: 5 };
       repo.create.mockReturnValue(assigned);
       repo.save.mockResolvedValue(assigned);
@@ -556,6 +560,7 @@ describe('TicketService', () => {
 
       const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
       expect(result.created).toBe(1);
+      expect(userService.findOne).toHaveBeenCalledWith(5);
       expect(userRepo.createQueryBuilder).not.toHaveBeenCalled();
       expect(auditLogService.log).toHaveBeenCalledTimes(1);
       expect(auditLogService.log).toHaveBeenCalledWith({
@@ -569,6 +574,7 @@ describe('TicketService', () => {
 
     it('should not audit when save fails for a valid row', async () => {
       projectService.findOne.mockResolvedValue({} as never);
+      userService.findOne.mockResolvedValue({} as never);
       repo.create.mockReturnValue(mockTicket);
       repo.save.mockRejectedValue(new Error('db error'));
 
@@ -581,6 +587,197 @@ describe('TicketService', () => {
       expect(result.created).toBe(0);
       expect(result.failed).toBe(1);
       expect(auditLogService.log).not.toHaveBeenCalled();
+    });
+
+    it('should import DONE status when valid', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      const doneTicket = { ...mockTicket, status: TicketStatus.DONE };
+      repo.create.mockReturnValue(doneTicket);
+      repo.save.mockResolvedValue(doneTicket);
+      const qb = mockUserRepoQb();
+      qb.getRawOne.mockResolvedValue(undefined);
+
+      const csv = [
+        'title,description,status,priority,type,assigneeId',
+        'Done,Desc,DONE,HIGH,BUG,',
+      ].join('\n');
+
+      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      expect(result.created).toBe(1);
+    });
+
+    it('should parse quoted fields containing commas', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      repo.create.mockReturnValue(mockTicket);
+      repo.save.mockResolvedValue(mockTicket);
+      const qb = mockUserRepoQb();
+      qb.getRawOne.mockResolvedValue(undefined);
+
+      const csv = [
+        'title,description,status,priority,type,assigneeId',
+        '"Title, with comma","Desc, also",TODO,HIGH,BUG,',
+      ].join('\n');
+
+      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      expect(result.created).toBe(1);
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Title, with comma',
+          description: 'Desc, also',
+        }),
+      );
+    });
+
+    it('should fail row for invalid priority and type without crashing', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+
+      const csv = [
+        'title,description,status,priority,type,assigneeId',
+        'T,D,TODO,INVALID_P,INVALID_T,',
+      ].join('\n');
+
+      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      expect(result.failed).toBe(1);
+      expect(result.errors[0]).toContain('priority must be one of');
+      expect(result.errors[0]).toContain('type must be one of');
+    });
+
+    it('should fail row when title is missing', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+
+      const csv = [
+        'title,description,status,priority,type,assigneeId',
+        ',Desc,TODO,HIGH,BUG,',
+      ].join('\n');
+
+      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      expect(result.failed).toBe(1);
+      expect(result.errors[0]).toContain('title is required');
+    });
+
+    it('should fail row when title exceeds DTO max length', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      const longTitle = 'x'.repeat(256);
+
+      const csv = [
+        'title,description,status,priority,type,assigneeId',
+        `${longTitle},D,TODO,HIGH,BUG,`,
+      ].join('\n');
+
+      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      expect(result.failed).toBe(1);
+      expect(result.errors[0]).toContain('255');
+    });
+
+    it('should fail row when description exceeds DTO max length', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      const longDesc = 'd'.repeat(5001);
+
+      const csv = [
+        'title,description,status,priority,type,assigneeId',
+        `T,${longDesc},TODO,HIGH,BUG,`,
+      ].join('\n');
+
+      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      expect(result.failed).toBe(1);
+      expect(result.errors[0]).toContain('5000');
+    });
+
+    it('should fail row for non-integer assigneeId', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+
+      const csv = [
+        'title,description,status,priority,type,assigneeId',
+        'T,D,TODO,HIGH,BUG,1.5',
+      ].join('\n');
+
+      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      expect(result.failed).toBe(1);
+      expect(result.errors[0]).toContain('assigneeId must be a valid integer');
+    });
+
+    it('should fail row when assignee does not exist', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      userService.findOne.mockRejectedValue(new NotFoundException());
+
+      const csv = [
+        'title,description,status,priority,type,assigneeId',
+        'T,D,TODO,HIGH,BUG,99',
+      ].join('\n');
+
+      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      expect(result.failed).toBe(1);
+      expect(result.errors[0]).toContain(
+        'Assignee with ID 99 does not exist',
+      );
+      expect(repo.save).not.toHaveBeenCalled();
+    });
+
+    it('should throw BadRequestException for malformed CSV', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      const csv =
+        'title,description,status,priority,type,assigneeId\n"unclosed';
+
+      await expect(
+        service.importFromCsv(1, Buffer.from(csv), importerUserId),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should reject import when data row count exceeds limit', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      const header = 'title,description,status,priority,type,assigneeId';
+      const row = 'T,D,TODO,HIGH,BUG,';
+      const lines = [
+        header,
+        ...Array(MAX_TICKET_CSV_IMPORT_ROWS + 1).fill(row),
+      ];
+      const csv = lines.join('\n');
+
+      await expect(
+        service.importFromCsv(1, Buffer.from(csv), importerUserId),
+      ).rejects.toThrow(BadRequestException);
+      expect(repo.save).not.toHaveBeenCalled();
+    });
+
+    it('should ignore id column from CSV', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      repo.create.mockReturnValue(mockTicket);
+      repo.save.mockResolvedValue(mockTicket);
+      const qb = mockUserRepoQb();
+      qb.getRawOne.mockResolvedValue(undefined);
+
+      const csv = [
+        'id,title,description,status,priority,type,assigneeId',
+        '99999,New,d,TODO,HIGH,BUG,',
+      ].join('\n');
+
+      await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'New',
+          projectId: 1,
+        }),
+      );
+      const payload = repo.create.mock.calls[0][0] as Ticket;
+      expect(Object.prototype.hasOwnProperty.call(payload, 'id')).toBe(false);
+    });
+
+    it('should ignore projectId column in CSV (uses multipart project id)', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      repo.create.mockReturnValue(mockTicket);
+      repo.save.mockResolvedValue(mockTicket);
+      const qb = mockUserRepoQb();
+      qb.getRawOne.mockResolvedValue(undefined);
+
+      const csv = [
+        'title,description,status,priority,type,assigneeId,projectId',
+        'T,D,TODO,HIGH,BUG,,999',
+      ].join('\n');
+
+      await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ projectId: 1 }),
+      );
     });
   });
 

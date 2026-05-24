@@ -17,6 +17,10 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import {
+  MaxTicketCsvSizeValidator,
+  CsvOriginalNameValidator,
+} from './csv-import-file.validators';
 import { ApiTags, ApiBearerAuth, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Request, Response } from 'express';
@@ -90,6 +94,10 @@ export class TicketController {
 
   /**
    * `POST /tickets/import` — imports tickets from a CSV file.
+   *
+   * Validates **`text/csv`** MIME type, **`originalname`** ending in **`.csv`**,
+   * and **`10 MB`** max size inclusive at the multipart boundary (`ParseFilePipe`)
+   * before processing.
    */
   @Post('import')
   @HttpCode(HttpStatus.OK)
@@ -109,6 +117,8 @@ export class TicketController {
     @UploadedFile(
       new ParseFilePipe({
         validators: [
+          new MaxTicketCsvSizeValidator(),
+          new CsvOriginalNameValidator(),
           new FileTypeValidator({
             fileType: /^text\/csv$/,
             skipMagicNumbersValidation: true,

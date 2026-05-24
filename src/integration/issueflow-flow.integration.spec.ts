@@ -29,6 +29,8 @@ import { TicketStatus } from '../ticket/enums/ticket-status.enum';
 import { TicketPriority } from '../ticket/enums/ticket-priority.enum';
 import { TicketType } from '../ticket/enums/ticket-type.enum';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
+import { Project } from '../project/project.entity';
 
 jest.mock('bcrypt');
 
@@ -113,6 +115,23 @@ describe('IssueFlow Full-Flow Integration', () => {
       getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
     };
 
+    const queryRunnerStub = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      startTransaction: jest.fn().mockResolvedValue(undefined),
+      commitTransaction: jest.fn().mockResolvedValue(undefined),
+      rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+      release: jest.fn().mockResolvedValue(undefined),
+      manager: {
+        findOne: jest.fn(),
+        save: jest.fn(),
+        remove: jest.fn(),
+      },
+    };
+
+    const dataSourceStub = {
+      createQueryRunner: jest.fn().mockReturnValue(queryRunnerStub),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
@@ -121,6 +140,10 @@ describe('IssueFlow Full-Flow Integration', () => {
         CommentService,
         ProjectService,
         AuditLogService,
+        {
+          provide: DataSource,
+          useValue: dataSourceStub,
+        },
         {
           provide: ConfigService,
           useValue: {
@@ -270,8 +293,13 @@ describe('IssueFlow Full-Flow Integration', () => {
           },
         },
         {
-          provide: 'ProjectRepository',
-          useValue: {},
+          provide: getRepositoryToken(Project),
+          useValue: {
+            find: jest.fn().mockResolvedValue([]),
+            findOne: jest.fn(),
+            save: jest.fn(),
+            restore: jest.fn().mockResolvedValue({ affected: 1 }),
+          },
         },
       ],
     })
