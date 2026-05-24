@@ -32,6 +32,10 @@ import {
   isPgLockNotAvailableError,
 } from '../common/pg-nowait-row-lock';
 import { Readable } from 'stream';
+import {
+  CsvImportRowError,
+  CsvImportSummary,
+} from './csv-import-row-error';
 
 /** Maximum number of data rows (excluding the header) per ticket CSV import. */
 export const MAX_TICKET_CSV_IMPORT_ROWS = 10_000;
@@ -42,14 +46,24 @@ const CREATE_TICKET_TITLE_MAX_LEN = 255;
 /** Mirrors {@link CreateTicketDto} `@MaxLength(5000)`. */
 const CREATE_TICKET_DESCRIPTION_MAX_LEN = 5000;
 
-const TICKET_CREATE_STATUS_ENUM_MSG =
-  'status must be one of: TODO, IN_PROGRESS, IN_REVIEW, DONE';
+const ALLOWED_STATUSES = 'TODO, IN_PROGRESS, IN_REVIEW, DONE';
+const ALLOWED_PRIORITIES = 'LOW, MEDIUM, HIGH, CRITICAL';
+const ALLOWED_TYPES = 'BUG, FEATURE, TECHNICAL';
 
-const TICKET_CREATE_PRIORITY_ENUM_MSG =
-  'priority must be one of: LOW, MEDIUM, HIGH, CRITICAL';
+function csvStatusMessage(value: string): string {
+  const display = value.length > 0 ? value : '(empty)';
+  return `Invalid status: ${display}. Allowed values are ${ALLOWED_STATUSES}.`;
+}
 
-const TICKET_CREATE_TYPE_ENUM_MSG =
-  'type must be one of: BUG, FEATURE, TECHNICAL';
+function csvPriorityMessage(value: string): string {
+  const display = value.length > 0 ? value : '(empty)';
+  return `Invalid priority: ${display}. Allowed values are ${ALLOWED_PRIORITIES}.`;
+}
+
+function csvTypeMessage(value: string): string {
+  const display = value.length > 0 ? value : '(empty)';
+  return `Invalid type: ${display}. Allowed values are ${ALLOWED_TYPES}.`;
+}
 
 /**
  * Encapsulates all business logic for ticket management.
@@ -461,7 +475,7 @@ export class TicketService {
     projectId: number,
     fileBuffer: Buffer,
     importedByUserId: number,
-  ): Promise<{ created: number; failed: number; errors: string[] }> {
+  ): Promise<CsvImportSummary> {
     await this.projectService.findOne(projectId);
 
     const validStatuses = new Set(Object.values(TicketStatus));
@@ -470,7 +484,7 @@ export class TicketService {
 
     let created = 0;
     let failed = 0;
-    const errors: string[] = [];
+    const errors: CsvImportRowError[] = [];
 
     let records: Record<string, string>[];
     try {
@@ -491,7 +505,7 @@ export class TicketService {
     for (let i = 0; i < records.length; i++) {
       const row = records[i];
       const rowNum = i + 2;
-      const rowErrors: string[] = [];
+      const rowFieldErrors: CsvImportRowError[] = [];
 
       // id / projectId may appear in the file — never used for persistence (new rows only).
 
@@ -501,52 +515,92 @@ export class TicketService {
       const priorityRaw = (row['priority'] ?? '').trim();
       const typeRaw = (row['type'] ?? '').trim();
       const assigneeRaw = (row['assigneeId'] ?? '').trim();
+      const titleForError = title.length > 0 ? title : '(untitled)';
 
       if (!title) {
-        rowErrors.push('title is required');
+        rowFieldErrors.push({
+          row: rowNum,
+          title: titleForError,
+          field: 'title',
+          message: 'title is required',
+        });
       } else if (title.length > CREATE_TICKET_TITLE_MAX_LEN) {
-        rowErrors.push(
-          `title must be shorter than or equal to ${CREATE_TICKET_TITLE_MAX_LEN} characters`,
-        );
+        rowFieldErrors.push({
+          row: rowNum,
+          title,
+          field: 'title',
+          message: `title must be shorter than or equal to ${CREATE_TICKET_TITLE_MAX_LEN} characters`,
+        });
       }
 
       if (!description) {
-        rowErrors.push('description is required');
+        rowFieldErrors.push({
+          row: rowNum,
+          title: titleForError,
+          field: 'description',
+          message: 'description is required',
+        });
       } else if (description.length > CREATE_TICKET_DESCRIPTION_MAX_LEN) {
-        rowErrors.push(
-          `description must be shorter than or equal to ${CREATE_TICKET_DESCRIPTION_MAX_LEN} characters`,
-        );
+        rowFieldErrors.push({
+          row: rowNum,
+          title: titleForError,
+          field: 'description',
+          message: `description must be shorter than or equal to ${CREATE_TICKET_DESCRIPTION_MAX_LEN} characters`,
+        });
       }
 
       if (!validStatuses.has(statusRaw as TicketStatus)) {
-        rowErrors.push(TICKET_CREATE_STATUS_ENUM_MSG);
+        rowFieldErrors.push({
+          row: rowNum,
+          title: titleForError,
+          field: 'status',
+          message: csvStatusMessage(statusRaw),
+        });
       }
       if (!validPriorities.has(priorityRaw as TicketPriority)) {
-        rowErrors.push(TICKET_CREATE_PRIORITY_ENUM_MSG);
+        rowFieldErrors.push({
+          row: rowNum,
+          title: titleForError,
+          field: 'priority',
+          message: csvPriorityMessage(priorityRaw),
+        });
       }
       if (!validTypes.has(typeRaw as TicketType)) {
-        rowErrors.push(TICKET_CREATE_TYPE_ENUM_MSG);
+        rowFieldErrors.push({
+          row: rowNum,
+          title: titleForError,
+          field: 'type',
+          message: csvTypeMessage(typeRaw),
+        });
       }
 
       let assigneeId: number | null = null;
       if (assigneeRaw.length > 0) {
         if (!/^-?\d+$/.test(assigneeRaw)) {
-          rowErrors.push('assigneeId must be a valid integer');
+          rowFieldErrors.push({
+            row: rowNum,
+            title: titleForError,
+            field: 'assigneeId',
+            message: 'assigneeId must be a valid integer',
+          });
         } else {
           const parsedAssignee = Number(assigneeRaw);
-          if (
-            !Number.isSafeInteger(parsedAssignee)
-          ) {
-            rowErrors.push('assigneeId must be a valid integer');
+          if (!Number.isSafeInteger(parsedAssignee)) {
+            rowFieldErrors.push({
+              row: rowNum,
+              title: titleForError,
+              field: 'assigneeId',
+              message: 'assigneeId must be a valid integer',
+            });
           } else {
             assigneeId = parsedAssignee;
           }
         }
       }
 
-      if (rowErrors.length > 0) {
+      if (rowFieldErrors.length > 0) {
         failed++;
-        errors.push(`Row ${rowNum}: ${rowErrors.join('; ')}`);
+        errors.push(...rowFieldErrors);
         continue;
       }
 
@@ -556,9 +610,12 @@ export class TicketService {
         } catch (error: unknown) {
           if (error instanceof NotFoundException) {
             failed++;
-            errors.push(
-              `Row ${rowNum}: Assignee with ID ${assigneeId} does not exist`,
-            );
+            errors.push({
+              row: rowNum,
+              title,
+              field: 'assigneeId',
+              message: `Assignee with ID ${assigneeId} does not exist`,
+            });
             continue;
           }
           throw error;
@@ -588,11 +645,15 @@ export class TicketService {
           await this.autoAssign(saved);
         }
         created++;
-      } catch (error: unknown) {
+      } catch {
         failed++;
-        const msg =
-          error instanceof Error ? error.message : 'unknown error';
-        errors.push(`Row ${rowNum}: ${msg}`);
+        errors.push({
+          row: rowNum,
+          title,
+          field: 'row',
+          message:
+            'Unable to persist ticket row. Please verify the data and try again.',
+        });
       }
     }
 
@@ -662,8 +723,54 @@ export class TicketService {
       );
     }
 
+    if (await this.wouldCreateCircularDependency(ticketId, dto.blockedBy)) {
+      throw new BadRequestException(
+        `Cannot add dependency: Ticket ${ticketId} is already blocking Ticket ${dto.blockedBy}, creating a circular dependency loop.`,
+      );
+    }
+
     ticket.blockedBy.push(blocker);
     await this.ticketRepository.save(ticket);
+  }
+
+  /**
+   * Returns true when adding `blockedById` as a blocker of `ticketId`
+   * would create a direct or transitive circular dependency loop.
+   *
+   * Walks the existing blocker chain starting from `blockedById`; if
+   * `ticketId` is reachable, the proposed edge would close a cycle.
+   */
+  private async wouldCreateCircularDependency(
+    ticketId: number,
+    blockedById: number,
+  ): Promise<boolean> {
+    const visited = new Set<number>();
+    const queue: number[] = [blockedById];
+
+    while (queue.length > 0) {
+      const currentId = queue.shift()!;
+      if (currentId === ticketId) {
+        return true;
+      }
+      if (visited.has(currentId)) {
+        continue;
+      }
+      visited.add(currentId);
+
+      const current = await this.ticketRepository.findOne({
+        where: { id: currentId },
+        relations: ['blockedBy'],
+      });
+      if (!current) {
+        continue;
+      }
+
+      for (const blocker of current.blockedBy) {
+        queue.push(blocker.id);
+      }
+    }
+
+    return false;
   }
 
   /**

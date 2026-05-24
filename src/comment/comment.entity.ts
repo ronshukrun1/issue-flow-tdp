@@ -6,20 +6,20 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   ManyToOne,
-  ManyToMany,
+  OneToMany,
   JoinColumn,
-  JoinTable,
 } from 'typeorm';
 import { Exclude } from 'class-transformer';
 import { Ticket } from '../ticket/ticket.entity';
 import { User } from '../user/user.entity';
+import { CommentMention } from './comment-mention.entity';
 
 /**
  * Represents a user comment on a ticket.
  *
- * Comments track `@username` mentions via a many-to-many join table
- * (`comment_mentions`). The mention list is re-evaluated on every
- * create and update.
+ * Comments track `@username` mentions via the {@link CommentMention}
+ * join entity (`comment_mentions`). The mention list is re-evaluated
+ * on every create and update.
  *
  * Internal fields (`version`, `createdAt`, `updatedAt`) and
  * navigation properties are excluded from serialised API responses
@@ -50,12 +50,19 @@ export class Comment {
   content!: string;
 
   /**
-   * Users mentioned via `@username` in the comment content.
-   * Populated in comment responses with `id`, `username`,
-   * and `fullName`.
+   * Persisted mention join rows. `userId` FK uses `onDelete: 'CASCADE'`
+   * on {@link CommentMention} so user hard-delete removes links only.
    */
-  @ManyToMany(() => User)
-  @JoinTable({ name: 'comment_mentions' })
+  @OneToMany(() => CommentMention, (link) => link.comment, {
+    cascade: true,
+  })
+  @Exclude()
+  mentionLinks?: CommentMention[];
+
+  /**
+   * Resolved users for API responses (`id`, `username`, `fullName`).
+   * Populated by {@link CommentService} — not a direct DB column.
+   */
   mentionedUsers!: User[];
 
   /** Optimistic lock version — prevents simultaneous edits (TDP 2.5). */

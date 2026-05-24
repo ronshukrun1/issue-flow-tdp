@@ -3,15 +3,21 @@ import {
   Logger,
   NotFoundException,
   ConflictException,
+  ForbiddenException,
+  BadRequestException,
   OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, QueryFailedError, In } from 'typeorm';
+import { Repository, QueryFailedError, DataSource } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { User } from './user.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { Role } from './role.enum';
+import { Project } from '../project/project.entity';
+import { Ticket } from '../ticket/ticket.entity';
+import { AuditLog } from '../audit-log/audit-log.entity';
+import { AuditAction } from '../audit-log/enums/audit-action.enum';
 
 /** Shape of the PostgreSQL driver error embedded inside QueryFailedError. */
 interface PostgresDriverError {
@@ -23,6 +29,20 @@ const BCRYPT_SALT_ROUNDS = 10;
 
 /** Bootstrap password used only for the seeded `admin` account (first login). */
 const SEEDED_ADMIN_PASSWORD = 'secret';
+
+/** Username of the primary bootstrap administrator seeded on first startup. */
+export const BOOTSTRAP_ADMIN_USERNAME = 'admin';
+
+/** 403 Forbidden — non-admin included `role` in update body */
+export const USER_UPDATE_ROLE_REQUIRES_ADMIN =
+  'This action requires administrator privileges.';
+/** 403 Forbidden — non-admin targeted another `:userId` */
+export const USER_UPDATE_OWN_PROFILE_ONLY =
+  'Users can only update their own profile.';
+
+/** 400 Bad Request — attempted hard-delete of the bootstrap admin account */
+export const BOOTSTRAP_ADMIN_DELETE_FORBIDDEN =
+  'The bootstrap administrator account cannot be deleted';
 
 /**
  * Type guard that checks whether a caught error is a TypeORM
@@ -53,6 +73,7 @@ export class UserService implements OnModuleInit {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    private readonly dataSource: DataSource,
   ) {}
 
   /**
@@ -65,7 +86,7 @@ export class UserService implements OnModuleInit {
 
     const hashedPassword = await bcrypt.hash(SEEDED_ADMIN_PASSWORD, BCRYPT_SALT_ROUNDS);
     const admin = this.userRepository.create({
-      username: 'admin',
+      username: BOOTSTRAP_ADMIN_USERNAME,
       email: 'admin@issueflow.com',
       fullName: 'System Admin',
       role: Role.ADMIN,
@@ -170,17 +191,38 @@ export class UserService implements OnModuleInit {
   /**
    * Updates the mutable fields of an existing user.
    *
+   * **`ADMIN`** may update **`fullName`** and **`role`** for any user. Non-admins may
+   * update **`fullName`** on their own account only — the request body must **not**
+   * include the **`role`** property (presence is flagged by **`requestBodyIncludesRole`**).
+   *
    * Only `fullName` and `role` may be changed; the identity fields
    * (`username`, `email`) are immutable after creation. Uses explicit
    * field assignment to avoid accidentally overwriting protected columns.
    *
-   * @param id  - The numeric user identifier.
-   * @param dto - Validated update payload (partial).
+   * @param targetUserId            - `:userId` from the route.
+   * @param dto                     - Validated update payload (partial).
+   * @param actor                   - Caller from **`request.user`** (`userId`, `role`).
+   * @param requestBodyIncludesRole - `true` when the HTTP body contained a **`role`** key (after validation).
    * @returns The updated {@link User} entity.
+   * @throws {ForbiddenException} When the caller is not permitted to apply this update.
    * @throws {NotFoundException} When no user with the given ID exists.
    */
-  async update(id: number, dto: UpdateUserDto): Promise<User> {
-    const user = await this.findOne(id);
+  async update(
+    targetUserId: number,
+    dto: UpdateUserDto,
+    actor: { userId: number; role: Role },
+    requestBodyIncludesRole: boolean,
+  ): Promise<User> {
+    if (actor.role !== Role.ADMIN) {
+      if (actor.userId !== targetUserId) {
+        throw new ForbiddenException(USER_UPDATE_OWN_PROFILE_ONLY);
+      }
+      if (requestBodyIncludesRole) {
+        throw new ForbiddenException(USER_UPDATE_ROLE_REQUIRES_ADMIN);
+      }
+    }
+
+    const user = await this.findOne(targetUserId);
 
     if (dto.fullName !== undefined) {
       user.fullName = dto.fullName;
@@ -195,11 +237,73 @@ export class UserService implements OnModuleInit {
   /**
    * Permanently removes a user from the system.
    *
+   * Before deletion, owned projects are reassigned to the bootstrap
+   * administrator and assigned tickets are explicitly unassigned, each
+   * producing a SYSTEM audit log entry within the same transaction.
+   *
    * @param id - The numeric user identifier.
    * @throws {NotFoundException} When no user with the given ID exists.
+   * @throws {BadRequestException} When attempting to delete the bootstrap admin.
    */
   async remove(id: number): Promise<void> {
     const user = await this.findOne(id);
-    await this.userRepository.remove(user);
+
+    if (user.username === BOOTSTRAP_ADMIN_USERNAME) {
+      throw new BadRequestException(BOOTSTRAP_ADMIN_DELETE_FORBIDDEN);
+    }
+
+    const bootstrapAdmin = await this.userRepository.findOneBy({
+      username: BOOTSTRAP_ADMIN_USERNAME,
+    });
+    if (!bootstrapAdmin) {
+      throw new ConflictException(
+        'Bootstrap administrator account is missing; cannot safely delete user',
+      );
+    }
+
+    await this.dataSource.transaction(async (manager) => {
+      const ownedProjects = await manager.find(Project, {
+        where: { ownerId: id },
+      });
+      const assignedTickets = await manager.find(Ticket, {
+        where: { assigneeId: id },
+      });
+
+      const auditEntries: AuditLog[] = [];
+
+      for (const project of ownedProjects) {
+        project.ownerId = bootstrapAdmin.id;
+        await manager.save(Project, project);
+        auditEntries.push(
+          manager.create(AuditLog, {
+            action: AuditAction.UPDATE,
+            entityType: 'PROJECT',
+            entityId: project.id,
+            performedBy: null,
+            actor: 'SYSTEM',
+          }),
+        );
+      }
+
+      for (const ticket of assignedTickets) {
+        ticket.assigneeId = null;
+        await manager.save(Ticket, ticket);
+        auditEntries.push(
+          manager.create(AuditLog, {
+            action: AuditAction.UPDATE,
+            entityType: 'TICKET',
+            entityId: ticket.id,
+            performedBy: null,
+            actor: 'SYSTEM',
+          }),
+        );
+      }
+
+      if (auditEntries.length > 0) {
+        await manager.save(AuditLog, auditEntries);
+      }
+
+      await manager.remove(User, user);
+    });
   }
 }

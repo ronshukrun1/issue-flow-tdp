@@ -24,8 +24,15 @@ const mockUser: User = {
   updatedAt: now,
 };
 
-const mockRequest = (userId: number): Request =>
-  ({ user: { userId, username: 'admin', role: Role.ADMIN } }) as unknown as Request;
+const mockRequest = (
+  userId: number,
+  role: Role = Role.ADMIN,
+  body: Record<string, unknown> | UpdateUserDto = {},
+): Request =>
+  ({
+    user: { userId, username: 'caller', role },
+    body: body ?? {},
+  }) as unknown as Request;
 
 describe('UserController', () => {
   let controller: UserController;
@@ -125,19 +132,62 @@ describe('UserController', () => {
   describe('update', () => {
     const dto: UpdateUserDto = { fullName: 'Jane Doe', role: Role.ADMIN };
 
-    it('should update the user and log audit', async () => {
-      const updated: User = { ...mockUser, ...dto };
-      service.update.mockResolvedValue(updated);
-      const req = mockRequest(10);
+    it('should update the user and log audit without returning a body', async () => {
+      service.update.mockResolvedValue({ ...mockUser, ...dto });
+      const req = mockRequest(10, Role.ADMIN, {
+        fullName: dto.fullName,
+        role: dto.role,
+      });
 
       const result = await controller.update(1, dto, req);
-      expect(result).toEqual(updated);
+      expect(result).toBeUndefined();
+      expect(service.update).toHaveBeenCalledWith(
+        1,
+        dto,
+        { userId: 10, role: Role.ADMIN },
+        true,
+      );
       expect(auditLogService.log).toHaveBeenCalled();
+    });
+
+    it('computes requestBodyIncludesRole when raw body omits vs includes role key', async () => {
+      const fullNameDto: UpdateUserDto = { fullName: 'Solo Name' };
+      service.update.mockResolvedValue({ ...mockUser, ...fullNameDto });
+
+      await controller.update(
+        1,
+        fullNameDto,
+        mockRequest(10, Role.ADMIN, { fullName: 'Solo Name' }),
+      );
+
+      await controller.update(
+        2,
+        { role: Role.DEVELOPER },
+        mockRequest(10, Role.ADMIN, { role: Role.DEVELOPER }),
+      );
+
+      expect(service.update).toHaveBeenNthCalledWith(
+        1,
+        1,
+        fullNameDto,
+        { userId: 10, role: Role.ADMIN },
+        false,
+      );
+      expect(service.update).toHaveBeenNthCalledWith(
+        2,
+        2,
+        { role: Role.DEVELOPER },
+        { userId: 10, role: Role.ADMIN },
+        true,
+      );
     });
 
     it('should propagate NotFoundException', async () => {
       service.update.mockRejectedValue(new NotFoundException());
-      await expect(controller.update(999, dto, mockRequest(10))).rejects.toThrow(NotFoundException);
+      const req = mockRequest(10, Role.ADMIN, dto);
+      await expect(controller.update(999, dto, req)).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 

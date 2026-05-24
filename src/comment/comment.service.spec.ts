@@ -35,6 +35,12 @@ const mockUser: User = {
   updatedAt: now,
 };
 
+const mockMentionLink = {
+  commentsId: 1,
+  usersId: mockUser.id,
+  user: mockUser,
+};
+
 const mockComment: Comment = {
   id: 1,
   ticketId: 1,
@@ -42,6 +48,7 @@ const mockComment: Comment = {
   authorId: 1,
   author: undefined as never,
   content: 'Hello @bob',
+  mentionLinks: [mockMentionLink],
   mentionedUsers: [mockUser],
   version: 1,
   createdAt: now,
@@ -66,6 +73,7 @@ describe('CommentService', () => {
     findOne: jest.Mock;
     save: jest.Mock;
     remove: jest.Mock;
+    delete: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -73,6 +81,7 @@ describe('CommentService', () => {
       findOne: jest.fn(),
       save: jest.fn(),
       remove: jest.fn(),
+      delete: jest.fn().mockResolvedValue(undefined),
     };
     const queryRunnerStub = {
       connect: jest.fn().mockResolvedValue(undefined),
@@ -165,7 +174,10 @@ describe('CommentService', () => {
       userService.findByUsernames.mockResolvedValue([mockUser]);
       repo.create.mockReturnValue(mockComment);
       repo.save.mockResolvedValue(mockComment);
-      repo.findOneOrFail.mockResolvedValue(mockComment);
+      repo.findOneOrFail.mockResolvedValue({
+        ...mockComment,
+        mentionLinks: [mockMentionLink],
+      });
 
       const result = await service.create(1, authorId, dto);
       expect(result).toEqual(mockComment);
@@ -187,7 +199,12 @@ describe('CommentService', () => {
       ticketService.findOne.mockResolvedValue({} as never);
       userService.findOne.mockResolvedValue(mockUser);
       userService.findByUsernames.mockResolvedValue([]);
-      const noMentionComment = { ...mockComment, content: 'No mentions', mentionedUsers: [] };
+      const noMentionComment = {
+        ...mockComment,
+        content: 'No mentions',
+        mentionLinks: [],
+        mentionedUsers: [],
+      };
       repo.create.mockReturnValue(noMentionComment);
       repo.save.mockResolvedValue(noMentionComment);
       repo.findOneOrFail.mockResolvedValue(noMentionComment);
@@ -205,7 +222,11 @@ describe('CommentService', () => {
     const dto: UpdateCommentDto = { content: 'Updated @alice' };
 
     it('should update content and re-evaluate mentions when author is caller', async () => {
-      const updated = { ...mockComment, content: 'Updated @alice' };
+      const updated = {
+        ...mockComment,
+        content: 'Updated @alice',
+        mentionLinks: [mockMentionLink],
+      };
       txnCommentManager.findOne.mockResolvedValue({ ...mockComment });
       userService.findByUsernames.mockResolvedValue([mockUser]);
       txnCommentManager.save.mockResolvedValue(updated);
@@ -222,7 +243,11 @@ describe('CommentService', () => {
 
     it('should allow ADMIN to update another authors comment', async () => {
       const commentByBob = { ...mockComment, authorId: 2 };
-      const updated = { ...commentByBob, content: 'Updated @alice' };
+      const updated = {
+        ...commentByBob,
+        content: 'Updated @alice',
+        mentionLinks: [mockMentionLink],
+      };
       txnCommentManager.findOne.mockResolvedValue({ ...commentByBob });
       userService.findByUsernames.mockResolvedValue([mockUser]);
       txnCommentManager.save.mockResolvedValue(updated);

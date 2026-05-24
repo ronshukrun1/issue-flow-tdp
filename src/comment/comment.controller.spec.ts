@@ -30,6 +30,7 @@ const mockComment: Comment = {
   authorId: 1,
   author: undefined as never,
   content: 'Hello @bob',
+  mentionLinks: [{ commentsId: 1, usersId: mockUser.id, user: mockUser }],
   mentionedUsers: [mockUser],
   version: 1,
   createdAt: now,
@@ -112,13 +113,12 @@ describe('CommentController', () => {
   describe('update', () => {
     const dto: UpdateCommentDto = { content: 'Updated @alice' };
 
-    it('should update the comment and log audit', async () => {
-      const updated = { ...mockComment, content: 'Updated @alice' };
-      service.update.mockResolvedValue(updated);
+    it('should update the comment and log audit without returning a body', async () => {
+      service.update.mockResolvedValue({ ...mockComment, content: 'Updated @alice' });
       const req = mockRequest(1);
 
       const result = await controller.update(1, 1, dto, req);
-      expect(result).toEqual(updated);
+      expect(result).toBeUndefined();
       expect(service.update).toHaveBeenCalledWith(1, 1, dto, {
         userId: 1,
         role: Role.DEVELOPER,

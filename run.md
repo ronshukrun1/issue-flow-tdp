@@ -90,9 +90,10 @@ Use these credentials with `POST /auth/login` to obtain a JWT.
 1. **First login:** `POST /auth/login` with **`admin` / `secret`** (the seeded **`ADMIN`** — self-registration is not supported).
 2. **Create users:** Call **`POST /users`** with **`Authorization: Bearer <JWT>`** — the caller must be **`ADMIN`**. The JSON body **must** include **`password`** (plain text, at least **8** characters after trimming). The server stores a **bcrypt hash** and **never** returns `password` in the response.
 3. **Delete users:** **`DELETE /users/:userId`** requires the same **`ADMIN`** Bearer token. **`DEVELOPER`** callers and anonymous requests receive **403** (mirrors **`POST /users`** access control).
-4. **New user login:** Authenticate with `POST /auth/login` using the **username and password** supplied in step 2 (for accounts created via **`POST /users`**).
+4. **Update profiles:** **`POST /users/update/:userId`** — **`ADMIN`** may edit **`fullName`** and **`role`** for **any** user. **`DEVELOPER`** users may edit **only their own** **`fullName`** and **must omit** **`role`** from the JSON (**403** with **`This action requires administrator privileges`** if **`role`** is present; **403** **`Users can only update their own profile`** if `:userId` is not theirs). Unauthenticated callers are rejected by JWT (**401**).
+5. **New user login:** Authenticate with `POST /auth/login` using the **username and password** supplied in step 2 (for accounts created via **`POST /users`**).
 
-> **Note:** Only the bootstrap **admin** account is created without `POST /users`. All other users must be created by an **ADMIN** via **`POST /users`** with an explicit **`password`** field. Only **`ADMIN`** may remove users via **`DELETE /users/:userId`**.
+> **Note:** Only the bootstrap **admin** account is created without `POST /users`. All other users must be created by an **ADMIN** via **`POST /users`** with an explicit **`password`** field. Only **`ADMIN`** may remove users via **`DELETE /users/:userId`**. **`POST /users/update/:userId`** follows the **ADMIN** vs **`DEVELOPER`** rules listed in step 4.
 
 ## 5. Swagger (OpenAPI) Documentation
 
@@ -265,6 +266,34 @@ Each `curl` command prints the HTTP status code alongside the expected status, a
   - `GET /audit-logs` — query filters: `entityType`, `entityId`, `action`, `actor`.
   - Fault-tolerant logging: `AuditLogService.log()` wraps persistence in `try/catch` to never crash user-facing requests.
   - Integrated across all state-changing operations (User, Project, Ticket, Comment CRUD; ticket dependency and attachment mutations; CSV import—one **`TICKET` `CREATE`** per successful imported row; soft-delete restores; auto-escalation; auto-assignment).
+
+### Phase 5 — Contract Drift, User Cascade Delete & Dependency Loop Prevention
+
+- **Empty mutating response bodies (README P1):**
+  - `POST /users/update/:userId`, `PATCH /projects/:projectId`, `PATCH /tickets/:ticketId`, and `PATCH /tickets/:ticketId/comments/:commentId` now return **200 OK** with an **empty body** (`void`). Controllers delegate to services, write audit logs, and omit entity serialization. **`POST /users`** still returns the created user (including **`password`** in the request DTO only — unchanged per reviewer override).
+- **Secure user hard-delete cascade (no new routes):**
+  - `UserService.remove()` runs in a single DB transaction before hard-delete:
+    1. **Project owner reassignment** — projects where `ownerId = :userId` are reassigned to the bootstrap **`admin`** account (`username: admin`).
+    2. **Ticket assignee nullification** — tickets where `assigneeId = :userId` have assignee explicitly set to `null` (replacing silent DB `SET NULL`).
+    3. **SYSTEM audit logs** — each reassigned project and each nullified ticket generates an **`UPDATE`** audit entry with `actor: 'SYSTEM'`, `performedBy: null`.
+  - Bootstrap **`admin`** account cannot be deleted (**400 Bad Request**).
+- **Circular ticket dependency guard:**
+  - `TicketService.addDependency()` traverses the existing blocker chain from the proposed blocker before insert. Direct and transitive cycles throw **`BadRequestException`**: *"Cannot add dependency: Ticket [A] is already blocking Ticket [B], creating a circular dependency loop."*
+- **Audit log visibility (business override):**
+  - `GET /audit-logs` remains open to **all authenticated users** (`ADMIN` and `DEVELOPER`) — no RBAC restriction applied despite CR suggestion.
+- **Tests:** controller specs assert empty PATCH/update bodies; `UserService.remove` cascade + SYSTEM audits; circular/transitive dependency rejection messages.
+
+### Phase 6 — Comment Mention FK Safety, Cascading Project Soft Delete & Structured CSV Import Errors
+
+- **Comment mention join-table CASCADE (schema level):**
+  - `Comment.mentionedUsers` persisted via explicit {@link CommentMention} join entity (`comment_mentions`) with `onDelete: 'CASCADE'` on the `userId` FK. Hard-deleting a user removes mention **links** only — comments and their plain-text `@username` content remain intact; no FK **500** on user delete.
+- **Cascading project soft-delete / restore:**
+  - `ProjectService.softRemove()` runs in a single transaction: soft-deletes all **active** tickets for the project, then soft-deletes the project.
+  - `ProjectService.restore()` runs in a single transaction: restores the project, then restores all soft-deleted tickets with matching `projectId`.
+  - `GET /tickets?projectId=` continues to delegate to `ProjectService.findOne()` — soft-deleted (or missing) projects return **404** with `Project with ID N not found` before any ticket query executes.
+- **Structured CSV import row errors:**
+  - `POST /tickets/import` summary `errors` array entries are now objects: `{ row, title, field, message }` (e.g. invalid status → `{ "row": 4, "title": "Fix login bug", "field": "status", "message": "Invalid status: BLOCKED. Allowed values are TODO, IN_PROGRESS, IN_REVIEW, DONE." }`). Multiple field failures on one row emit one object per field; persistence failures map to a safe generic message (no raw DB strings).
+- **Tests:** `project.service.spec.ts` (cascade soft-delete/restore transactions), `ticket.service.spec.ts` (soft-deleted project 404 guard + structured CSV errors), existing suite preserved.
 
 ### Swagger (OpenAPI) Integration
 

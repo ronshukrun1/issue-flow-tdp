@@ -6,8 +6,9 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { Project } from './project.entity';
+import { Ticket } from '../ticket/ticket.entity';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 import { UserService } from '../user/user.service';
@@ -17,13 +18,15 @@ import { UserService } from '../user/user.service';
  *
  * Supports full CRUD with soft-delete semantics: standard queries
  * exclude soft-deleted records, and dedicated methods list or
- * restore them.
+ * restore them. Project soft-delete/restore cascades to all active
+ * tickets belonging to the project within a single transaction.
  */
 @Injectable()
 export class ProjectService {
   constructor(
     @InjectRepository(Project)
     private readonly projectRepository: Repository<Project>,
+    private readonly dataSource: DataSource,
     @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
   ) {}
@@ -104,17 +107,22 @@ export class ProjectService {
   }
 
   /**
-   * Soft-deletes a project by populating its `deletedAt` timestamp.
-   *
-   * The record remains in the database but is excluded from standard
-   * queries. It can be restored later by an ADMIN.
+   * Soft-deletes a project and cascades the soft-delete to all active
+   * tickets belonging to that project within a single transaction.
    *
    * @param id - The numeric project identifier.
    * @throws {NotFoundException} When no active project with the given ID exists.
    */
   async softRemove(id: number): Promise<void> {
     const project = await this.findOne(id);
-    await this.projectRepository.softRemove(project);
+
+    await this.dataSource.transaction(async (manager) => {
+      const tickets = await manager.find(Ticket, { where: { projectId: id } });
+      if (tickets.length > 0) {
+        await manager.softRemove(Ticket, tickets);
+      }
+      await manager.softRemove(Project, project);
+    });
   }
 
   /**
@@ -131,17 +139,21 @@ export class ProjectService {
   }
 
   /**
-   * Restores a previously soft-deleted project.
+   * Restores a previously soft-deleted project and concurrently restores
+   * all soft-deleted tickets belonging to that project.
    *
    * @param id - The numeric project identifier.
    * @throws {NotFoundException} When no soft-deleted project with the given ID exists.
    */
   async restore(id: number): Promise<void> {
-    const result = await this.projectRepository.restore(id);
-    if (result.affected === 0) {
-      throw new NotFoundException(
-        `Soft-deleted project with ID ${id} not found`,
-      );
-    }
+    await this.dataSource.transaction(async (manager) => {
+      const result = await manager.restore(Project, id);
+      if (result.affected === 0) {
+        throw new NotFoundException(
+          `Soft-deleted project with ID ${id} not found`,
+        );
+      }
+      await manager.restore(Ticket, { projectId: id });
+    });
   }
 }

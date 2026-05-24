@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { UserService } from './user.service';
 import { AuthService } from '../auth/auth.service';
@@ -57,6 +58,10 @@ describe('UserService.create → AuthService.login password flow', () => {
         {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue(3600) },
+        },
+        {
+          provide: DataSource,
+          useValue: { transaction: jest.fn() },
         },
       ],
     }).compile();

@@ -252,6 +252,7 @@ describe('IssueFlow Full-Flow Integration', () => {
               ticketId: 1,
               authorId: adminUser.id,
               content: 'Great work @alice!',
+              mentionLinks: [{ commentsId: where.id, usersId: devUser.id, user: devUser }],
               mentionedUsers: [devUser],
               version: 1,
               createdAt: now,

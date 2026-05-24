@@ -165,6 +165,16 @@ describe('TicketService', () => {
       projectService.findOne.mockRejectedValue(new NotFoundException());
       await expect(service.findByProject(999)).rejects.toThrow(NotFoundException);
     });
+
+    it('should propagate NotFoundException when the project is soft-deleted', async () => {
+      projectService.findOne.mockRejectedValue(
+        new NotFoundException('Project with ID 5 not found'),
+      );
+      await expect(service.findByProject(5)).rejects.toThrow(
+        'Project with ID 5 not found',
+      );
+      expect(repo.find).not.toHaveBeenCalled();
+    });
   });
 
   // ---------- findOne ----------
@@ -502,21 +512,24 @@ describe('TicketService', () => {
       );
     });
 
-    it('should collect errors for invalid rows without audit logs', async () => {
+    it('should collect structured errors for invalid rows without audit logs', async () => {
       projectService.findOne.mockResolvedValue({} as never);
 
       const csv = [
         'title,description,status,priority,type,assigneeId',
-        ',Desc,INVALID,HIGH,BUG,',
+        'Fix login bug,Desc,BLOCKED,HIGH,BUG,',
       ].join('\n');
 
       const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
       expect(result.failed).toBe(1);
       expect(result.errors).toHaveLength(1);
-      expect(result.errors[0]).toContain('Row 2');
-      expect(result.errors[0]).toContain(
-        'status must be one of: TODO, IN_PROGRESS, IN_REVIEW, DONE',
-      );
+      expect(result.errors[0]).toEqual({
+        row: 2,
+        title: 'Fix login bug',
+        field: 'status',
+        message:
+          'Invalid status: BLOCKED. Allowed values are TODO, IN_PROGRESS, IN_REVIEW, DONE.',
+      });
       expect(auditLogService.log).not.toHaveBeenCalled();
     });
 
@@ -628,7 +641,7 @@ describe('TicketService', () => {
       );
     });
 
-    it('should fail row for invalid priority and type without crashing', async () => {
+    it('should emit one structured error per invalid field on the same row', async () => {
       projectService.findOne.mockResolvedValue({} as never);
 
       const csv = [
@@ -638,8 +651,19 @@ describe('TicketService', () => {
 
       const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
       expect(result.failed).toBe(1);
-      expect(result.errors[0]).toContain('priority must be one of');
-      expect(result.errors[0]).toContain('type must be one of');
+      expect(result.errors).toHaveLength(2);
+      expect(result.errors[0]).toMatchObject({
+        row: 2,
+        title: 'T',
+        field: 'priority',
+      });
+      expect(result.errors[0].message).toContain('Invalid priority: INVALID_P');
+      expect(result.errors[1]).toMatchObject({
+        row: 2,
+        title: 'T',
+        field: 'type',
+      });
+      expect(result.errors[1].message).toContain('Invalid type: INVALID_T');
     });
 
     it('should fail row when title is missing', async () => {
@@ -652,7 +676,12 @@ describe('TicketService', () => {
 
       const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
       expect(result.failed).toBe(1);
-      expect(result.errors[0]).toContain('title is required');
+      expect(result.errors[0]).toMatchObject({
+        row: 2,
+        title: '(untitled)',
+        field: 'title',
+        message: 'title is required',
+      });
     });
 
     it('should fail row when title exceeds DTO max length', async () => {
@@ -666,7 +695,10 @@ describe('TicketService', () => {
 
       const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
       expect(result.failed).toBe(1);
-      expect(result.errors[0]).toContain('255');
+      expect(result.errors[0]).toMatchObject({
+        field: 'title',
+        message: expect.stringContaining('255'),
+      });
     });
 
     it('should fail row when description exceeds DTO max length', async () => {
@@ -680,7 +712,10 @@ describe('TicketService', () => {
 
       const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
       expect(result.failed).toBe(1);
-      expect(result.errors[0]).toContain('5000');
+      expect(result.errors[0]).toMatchObject({
+        field: 'description',
+        message: expect.stringContaining('5000'),
+      });
     });
 
     it('should fail row for non-integer assigneeId', async () => {
@@ -693,7 +728,10 @@ describe('TicketService', () => {
 
       const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
       expect(result.failed).toBe(1);
-      expect(result.errors[0]).toContain('assigneeId must be a valid integer');
+      expect(result.errors[0]).toMatchObject({
+        field: 'assigneeId',
+        message: 'assigneeId must be a valid integer',
+      });
     });
 
     it('should fail row when assignee does not exist', async () => {
@@ -707,10 +745,35 @@ describe('TicketService', () => {
 
       const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
       expect(result.failed).toBe(1);
-      expect(result.errors[0]).toContain(
-        'Assignee with ID 99 does not exist',
-      );
+      expect(result.errors[0]).toEqual({
+        row: 2,
+        title: 'T',
+        field: 'assigneeId',
+        message: 'Assignee with ID 99 does not exist',
+      });
       expect(repo.save).not.toHaveBeenCalled();
+    });
+
+    it('should map persistence failures to structured row errors without raw DB text', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      userService.findOne.mockResolvedValue({} as never);
+      repo.create.mockReturnValue(mockTicket);
+      repo.save.mockRejectedValue(new Error('duplicate key value violates unique constraint'));
+
+      const csv = [
+        'title,description,status,priority,type,assigneeId',
+        'Bug,Desc,TODO,HIGH,BUG,5',
+      ].join('\n');
+
+      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      expect(result.failed).toBe(1);
+      expect(result.errors[0]).toEqual({
+        row: 2,
+        title: 'Bug',
+        field: 'row',
+        message:
+          'Unable to persist ticket row. Please verify the data and try again.',
+      });
     });
 
     it('should throw BadRequestException for malformed CSV', async () => {
@@ -811,6 +874,32 @@ describe('TicketService', () => {
       repo.findOneBy.mockResolvedValue(blocker);
 
       await expect(service.addDependency(1, { blockedBy: 42 })).rejects.toThrow(BadRequestException);
+    });
+
+    it('should reject circular dependencies with an informative message', async () => {
+      const blocker = { ...mockTicket, id: 42, blockedBy: [{ ...mockTicket, id: 1 }] };
+      repo.findOne
+        .mockResolvedValueOnce({ ...mockTicket, blockedBy: [] } as Ticket)
+        .mockResolvedValueOnce(blocker as Ticket);
+      repo.findOneBy.mockResolvedValue({ ...mockTicket, id: 42 });
+
+      await expect(service.addDependency(1, { blockedBy: 42 })).rejects.toThrow(
+        'Cannot add dependency: Ticket 1 is already blocking Ticket 42, creating a circular dependency loop.',
+      );
+    });
+
+    it('should reject transitive circular dependencies', async () => {
+      const ticketC = { ...mockTicket, id: 3, blockedBy: [{ ...mockTicket, id: 1 }] };
+      const ticketB = { ...mockTicket, id: 42, blockedBy: [ticketC] };
+      repo.findOne
+        .mockResolvedValueOnce({ ...mockTicket, blockedBy: [] } as Ticket)
+        .mockResolvedValueOnce(ticketB as Ticket)
+        .mockResolvedValueOnce(ticketC as Ticket);
+      repo.findOneBy.mockResolvedValue({ ...mockTicket, id: 42 });
+
+      await expect(service.addDependency(1, { blockedBy: 42 })).rejects.toThrow(
+        'Cannot add dependency: Ticket 1 is already blocking Ticket 42, creating a circular dependency loop.',
+      );
     });
 
     it('should throw NotFoundException when ticket does not exist', async () => {

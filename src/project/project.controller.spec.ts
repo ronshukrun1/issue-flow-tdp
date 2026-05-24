@@ -134,13 +134,12 @@ describe('ProjectController', () => {
   describe('update', () => {
     const dto: UpdateProjectDto = { name: 'Updated Name' };
 
-    it('should update the project and log audit', async () => {
-      const updated = { ...mockProject, name: 'Updated Name' };
-      service.update.mockResolvedValue(updated);
+    it('should update the project and log audit without returning a body', async () => {
+      service.update.mockResolvedValue({ ...mockProject, name: 'Updated Name' });
       const req = mockRequest(10);
 
       const result = await controller.update(1, dto, req);
-      expect(result).toEqual(updated);
+      expect(result).toBeUndefined();
       expect(auditLogService.log).toHaveBeenCalled();
     });
 

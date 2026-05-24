@@ -110,7 +110,7 @@ describe('TicketController', () => {
 
   describe('importCsv', () => {
     it('should delegate to service with authenticated userId and return summary', async () => {
-      const summary = { created: 2, failed: 0, errors: [] as string[] };
+      const summary = { created: 2, failed: 0, errors: [] as import('./csv-import-row-error').CsvImportRowError[] };
       service.importFromCsv.mockResolvedValue(summary);
       const file = { buffer: Buffer.from('csv') } as Express.Multer.File;
       const req = mockRequest(42);
@@ -161,12 +161,11 @@ describe('TicketController', () => {
   describe('update', () => {
     const dto: UpdateTicketDto = { title: 'Updated title' };
 
-    it('should update the ticket and log audit', async () => {
-      const updated = { ...mockTicket, title: 'Updated title' };
-      service.update.mockResolvedValue(updated);
+    it('should update the ticket and log audit without returning a body', async () => {
+      service.update.mockResolvedValue({ ...mockTicket, title: 'Updated title' });
       const req = mockRequest(10);
       const result = await controller.update(1, dto, req);
-      expect(result).toEqual(updated);
+      expect(result).toBeUndefined();
       expect(auditLogService.log).toHaveBeenCalled();
     });
 

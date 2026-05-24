@@ -83,14 +83,15 @@ export class CommentController {
    * content and re-evaluates its mentions.
    */
   @Patch(':commentId')
+  @HttpCode(HttpStatus.OK)
   async update(
     @Param('ticketId', ParseIntPipe) ticketId: number,
     @Param('commentId', ParseIntPipe) commentId: number,
     @Body() dto: UpdateCommentDto,
     @Req() req: Request,
-  ): Promise<Comment> {
+  ): Promise<void> {
     const jwtUser = req.user as { userId: number; role: Role };
-    const comment = await this.commentService.update(
+    await this.commentService.update(
       ticketId,
       commentId,
       dto,
@@ -103,7 +104,6 @@ export class CommentController {
       performedBy: jwtUser.userId,
       actor: 'USER',
     });
-    return comment;
   }
 
   /**

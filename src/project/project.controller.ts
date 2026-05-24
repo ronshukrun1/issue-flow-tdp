@@ -109,12 +109,13 @@ export class ProjectController {
    * `PATCH /projects/:projectId` — updates mutable fields of an existing project.
    */
   @Patch(':projectId')
+  @HttpCode(HttpStatus.OK)
   async update(
     @Param('projectId', ParseIntPipe) projectId: number,
     @Body() dto: UpdateProjectDto,
     @Req() req: Request,
-  ): Promise<Project> {
-    const project = await this.projectService.update(projectId, dto);
+  ): Promise<void> {
+    await this.projectService.update(projectId, dto);
     await this.auditLogService.log({
       action: AuditAction.UPDATE,
       entityType: 'PROJECT',
@@ -122,7 +123,6 @@ export class ProjectController {
       performedBy: (req.user as { userId: number }).userId,
       actor: 'USER',
     });
-    return project;
   }
 
   /**

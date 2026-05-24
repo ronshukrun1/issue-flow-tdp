@@ -31,6 +31,8 @@ import { Role } from './role.enum';
  * Each endpoint maps directly to the Users API contract defined in
  * the project README. All routes require a valid JWT (`JwtAuthGuard`).
  * **`POST /users`** and **`DELETE /users/:userId`** additionally require **`ADMIN`** via **`@Roles`**.
+ * **`POST /users/update/:userId`**: **`ADMIN`** may edit any user's **`fullName`** / **`role`**;
+ * other roles may edit **only their own** **`fullName`** (body **must not** contain **`role`**).
  */
 @ApiTags('Users')
 @ApiBearerAuth()
@@ -96,7 +98,10 @@ export class UserController {
   }
 
   /**
-   * `POST /users/update/:userId` — updates mutable fields of an existing user.
+   * `POST /users/update/:userId` — updates **`fullName`** and/or **`role`** (README contract).
+   *
+   * **`ADMIN`**: may update either field for **any** user. **Non-admins**: may update **only own**
+   * **`fullName`**; **`role`** in the JSON body yields **403** with **`UserService`** messages.
    */
   @Post('update/:userId')
   @HttpCode(HttpStatus.OK)
@@ -104,8 +109,24 @@ export class UserController {
     @Param('userId', ParseIntPipe) userId: number,
     @Body() dto: UpdateUserDto,
     @Req() req: Request,
-  ): Promise<User> {
-    const user = await this.userService.update(userId, dto);
+  ): Promise<void> {
+    const { userId: actorUserId, role: actorRole } = req.user as {
+      userId: number;
+      role: Role;
+    };
+    const actor = { userId: actorUserId, role: actorRole };
+    const body = req.body as Record<string, unknown>;
+    const requestBodyIncludesRole =
+      typeof body === 'object' &&
+      body !== null &&
+      Object.prototype.hasOwnProperty.call(body, 'role');
+
+    await this.userService.update(
+      userId,
+      dto,
+      actor,
+      requestBodyIncludesRole,
+    );
     await this.auditLogService.log({
       action: AuditAction.UPDATE,
       entityType: 'USER',
@@ -113,7 +134,6 @@ export class UserController {
       performedBy: (req.user as { userId: number }).userId,
       actor: 'USER',
     });
-    return user;
   }
 
   /**

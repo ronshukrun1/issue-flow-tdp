@@ -14,6 +14,7 @@ import {
   DataSource,
 } from 'typeorm';
 import { Comment } from './comment.entity';
+import { CommentMention } from './comment-mention.entity';
 import { CreateCommentDto } from './dto/create-comment.dto';
 import { UpdateCommentDto } from './dto/update-comment.dto';
 import { extractMentions } from './mention.util';
@@ -70,9 +71,9 @@ export class CommentService {
     await this.ticketService.findOne(ticketId);
     const comments = await this.commentRepository.find({
       where: { ticketId },
-      relations: ['mentionedUsers'],
+      relations: ['mentionLinks', 'mentionLinks.user'],
     });
-    return comments.map((c) => this.stripMentionFields(c));
+    return comments.map((c) => this.hydrateMentionedUsers(this.stripMentionFields(c)));
   }
 
   /**
@@ -112,15 +113,19 @@ export class CommentService {
       ticketId,
       authorId,
       content: dto.content,
-      mentionedUsers,
+      mentionLinks: mentionedUsers.map((user) => ({
+        commentsId: 0,
+        usersId: user.id,
+        user,
+      })),
     });
     const saved = await this.commentRepository.save(comment);
 
     const result = await this.commentRepository.findOneOrFail({
       where: { id: saved.id },
-      relations: ['mentionedUsers'],
+      relations: ['mentionLinks', 'mentionLinks.user'],
     });
-    return this.stripMentionFields(result);
+    return this.hydrateMentionedUsers(this.stripMentionFields(result));
   }
 
   /**
@@ -171,7 +176,15 @@ export class CommentService {
       CommentService.assertMayMutateComment(comment, actor);
 
       comment.content = dto.content;
-      comment.mentionedUsers = await this.resolveMentions(dto.content);
+      await queryRunner.manager.delete(CommentMention, {
+        commentsId: comment.id,
+      });
+      const mentionedUsers = await this.resolveMentions(dto.content);
+      comment.mentionLinks = mentionedUsers.map((user) => ({
+        commentsId: comment!.id,
+        usersId: user.id,
+        user,
+      }));
 
       try {
         await queryRunner.manager.save(Comment, comment);
@@ -194,9 +207,9 @@ export class CommentService {
 
     const result = await this.commentRepository.findOneOrFail({
       where: { id: commentId },
-      relations: ['mentionedUsers'],
+      relations: ['mentionLinks', 'mentionLinks.user'],
     });
-    return this.stripMentionFields(result);
+    return this.hydrateMentionedUsers(this.stripMentionFields(result));
   }
 
   /**
@@ -269,16 +282,31 @@ export class CommentService {
 
     const [data, total] = await this.commentRepository
       .createQueryBuilder('comment')
-      .innerJoin('comment.mentionedUsers', 'user', 'user.id = :userId', {
+      .innerJoin('comment.mentionLinks', 'mention', 'mention.usersId = :userId', {
         userId,
       })
-      .leftJoinAndSelect('comment.mentionedUsers', 'mentionedUser')
+      .leftJoinAndSelect('comment.mentionLinks', 'mentionLink')
+      .leftJoinAndSelect('mentionLink.user', 'mentionedUser')
       .orderBy('comment.createdAt', 'DESC')
       .skip((page - 1) * pageSize)
       .take(pageSize)
       .getManyAndCount();
 
-    return { data: data.map((c) => this.stripMentionFields(c)), total, page };
+    return {
+      data: data.map((c) =>
+        this.hydrateMentionedUsers(this.stripMentionFields(c)),
+      ),
+      total,
+      page,
+    };
+  }
+
+  /** Maps persisted {@link CommentMention} rows onto `mentionedUsers`. */
+  private hydrateMentionedUsers(comment: Comment): Comment {
+    comment.mentionedUsers = (comment.mentionLinks ?? [])
+      .map((link) => link.user)
+      .filter((user): user is User => user != null);
+    return comment;
   }
 
   /**

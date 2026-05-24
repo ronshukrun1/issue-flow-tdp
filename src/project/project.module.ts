@@ -5,6 +5,7 @@ import { ProjectService } from './project.service';
 import { ProjectController } from './project.controller';
 import { UserModule } from '../user/user.module';
 import { TicketModule } from '../ticket/ticket.module';
+import { Ticket } from '../ticket/ticket.entity';
 
 /**
  * Feature module that encapsulates everything related to project management.
@@ -16,7 +17,7 @@ import { TicketModule } from '../ticket/ticket.module';
  */
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Project]),
+    TypeOrmModule.forFeature([Project, Ticket]),
     forwardRef(() => UserModule),
     forwardRef(() => TicketModule),
   ],

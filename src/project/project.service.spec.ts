@@ -1,12 +1,13 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
 import { ProjectService } from './project.service';
 import { Project } from './project.entity';
+import { Ticket } from '../ticket/ticket.entity';
 import { UserService } from '../user/user.service';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
@@ -24,12 +25,49 @@ const mockProject: Project = {
   deletedAt: null,
 };
 
+const mockTicket = {
+  id: 10,
+  title: 'Ticket',
+  description: 'Desc',
+  status: 'TODO' as never,
+  priority: 'HIGH' as never,
+  type: 'BUG' as never,
+  projectId: 1,
+  assigneeId: null,
+  dueDate: null,
+  isOverdue: false,
+  blockedBy: [],
+  version: 1,
+  createdAt: now,
+  updatedAt: now,
+  deletedAt: null,
+  project: undefined as never,
+  assignee: null,
+} as Ticket;
+
 describe('ProjectService', () => {
   let service: ProjectService;
   let repo: jest.Mocked<Repository<Project>>;
   let userService: jest.Mocked<UserService>;
+  let transactionManager: {
+    find: jest.Mock;
+    softRemove: jest.Mock;
+    restore: jest.Mock;
+  };
+  let dataSource: { transaction: jest.Mock };
 
   beforeEach(async () => {
+    transactionManager = {
+      find: jest.fn(),
+      softRemove: jest.fn(),
+      restore: jest.fn(),
+    };
+    dataSource = {
+      transaction: jest.fn(async (cb: (manager: typeof transactionManager) => Promise<void>) =>
+        cb(transactionManager),
+      ),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ProjectService,
@@ -44,6 +82,10 @@ describe('ProjectService', () => {
             restore: jest.fn(),
             createQueryBuilder: jest.fn(),
           },
+        },
+        {
+          provide: DataSource,
+          useValue: dataSource,
         },
         {
           provide: UserService,
@@ -88,6 +130,13 @@ describe('ProjectService', () => {
     it('should throw NotFoundException when project does not exist', async () => {
       repo.findOneBy.mockResolvedValue(null);
       await expect(service.findOne(999)).rejects.toThrow(NotFoundException);
+    });
+
+    it('should throw NotFoundException when project is soft-deleted', async () => {
+      repo.findOneBy.mockResolvedValue(null);
+      await expect(service.findOne(1)).rejects.toThrow(
+        'Project with ID 1 not found',
+      );
     });
   });
 
@@ -168,20 +217,43 @@ describe('ProjectService', () => {
   // ---------- softRemove ----------
 
   describe('softRemove', () => {
-    it('should soft-delete the project', async () => {
+    it('should cascade soft-delete active tickets then the project in one transaction', async () => {
       repo.findOneBy.mockResolvedValue(mockProject);
-      repo.softRemove.mockResolvedValue({
-        ...mockProject,
-        deletedAt: now,
-      });
+      transactionManager.find.mockResolvedValue([mockTicket]);
+      transactionManager.softRemove.mockResolvedValue(undefined);
 
       await expect(service.softRemove(1)).resolves.toBeUndefined();
-      expect(repo.softRemove).toHaveBeenCalledWith(mockProject);
+
+      expect(dataSource.transaction).toHaveBeenCalled();
+      expect(transactionManager.find).toHaveBeenCalledWith(Ticket, {
+        where: { projectId: 1 },
+      });
+      expect(transactionManager.softRemove).toHaveBeenCalledWith(Ticket, [
+        mockTicket,
+      ]);
+      expect(transactionManager.softRemove).toHaveBeenCalledWith(
+        Project,
+        mockProject,
+      );
+    });
+
+    it('should soft-delete the project when it has no active tickets', async () => {
+      repo.findOneBy.mockResolvedValue(mockProject);
+      transactionManager.find.mockResolvedValue([]);
+
+      await expect(service.softRemove(1)).resolves.toBeUndefined();
+
+      expect(transactionManager.softRemove).toHaveBeenCalledTimes(1);
+      expect(transactionManager.softRemove).toHaveBeenCalledWith(
+        Project,
+        mockProject,
+      );
     });
 
     it('should throw NotFoundException when project does not exist', async () => {
       repo.findOneBy.mockResolvedValue(null);
       await expect(service.softRemove(999)).rejects.toThrow(NotFoundException);
+      expect(dataSource.transaction).not.toHaveBeenCalled();
     });
   });
 
@@ -205,13 +277,26 @@ describe('ProjectService', () => {
   // ---------- restore ----------
 
   describe('restore', () => {
-    it('should restore a soft-deleted project', async () => {
-      repo.restore.mockResolvedValue({ affected: 1, raw: [], generatedMaps: [] });
+    it('should restore the project and its soft-deleted tickets in one transaction', async () => {
+      transactionManager.restore
+        .mockResolvedValueOnce({ affected: 1, raw: [], generatedMaps: [] })
+        .mockResolvedValueOnce({ affected: 2, raw: [], generatedMaps: [] });
+
       await expect(service.restore(1)).resolves.toBeUndefined();
+
+      expect(dataSource.transaction).toHaveBeenCalled();
+      expect(transactionManager.restore).toHaveBeenCalledWith(Project, 1);
+      expect(transactionManager.restore).toHaveBeenCalledWith(Ticket, {
+        projectId: 1,
+      });
     });
 
     it('should throw NotFoundException when no soft-deleted project found', async () => {
-      repo.restore.mockResolvedValue({ affected: 0, raw: [], generatedMaps: [] });
+      transactionManager.restore.mockResolvedValue({
+        affected: 0,
+        raw: [],
+        generatedMaps: [],
+      });
       await expect(service.restore(999)).rejects.toThrow(NotFoundException);
     });
   });

@@ -28,6 +28,7 @@ import { TicketService } from './ticket.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
 import { AddDependencyDto } from './dto/add-dependency.dto';
+import { CsvImportRowError } from './csv-import-row-error';
 import { Ticket } from './ticket.entity';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../user/role.enum';
@@ -129,7 +130,7 @@ export class TicketController {
     file: Express.Multer.File,
     @Body('projectId', ParseIntPipe) projectId: number,
     @Req() req: Request,
-  ): Promise<{ created: number; failed: number; errors: string[] }> {
+  ): Promise<{ created: number; failed: number; errors: CsvImportRowError[] }> {
     return this.ticketService.importFromCsv(
       projectId,
       file.buffer,
@@ -171,12 +172,13 @@ export class TicketController {
    * `PATCH /tickets/:ticketId` — updates a ticket's fields.
    */
   @Patch(':ticketId')
+  @HttpCode(HttpStatus.OK)
   async update(
     @Param('ticketId', ParseIntPipe) ticketId: number,
     @Body() dto: UpdateTicketDto,
     @Req() req: Request,
-  ): Promise<Ticket> {
-    const ticket = await this.ticketService.update(ticketId, dto);
+  ): Promise<void> {
+    await this.ticketService.update(ticketId, dto);
     await this.auditLogService.log({
       action: AuditAction.UPDATE,
       entityType: 'TICKET',
@@ -184,7 +186,6 @@ export class TicketController {
       performedBy: (req.user as { userId: number }).userId,
       actor: 'USER',
     });
-    return ticket;
   }
 
   /**

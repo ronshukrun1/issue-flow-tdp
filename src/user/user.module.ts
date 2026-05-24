@@ -4,6 +4,9 @@ import { User } from './user.entity';
 import { UserService } from './user.service';
 import { UserController } from './user.controller';
 import { CommentModule } from '../comment/comment.module';
+import { Project } from '../project/project.entity';
+import { Ticket } from '../ticket/ticket.entity';
+import { AuditLog } from '../audit-log/audit-log.entity';
 
 /**
  * Feature module that encapsulates everything related to user management.
@@ -17,7 +20,10 @@ import { CommentModule } from '../comment/comment.module';
  * resolution.
  */
 @Module({
-  imports: [TypeOrmModule.forFeature([User]), forwardRef(() => CommentModule)],
+  imports: [
+    TypeOrmModule.forFeature([User, Project, Ticket, AuditLog]),
+    forwardRef(() => CommentModule),
+  ],
   controllers: [UserController],
   providers: [UserService],
   exports: [UserService],
