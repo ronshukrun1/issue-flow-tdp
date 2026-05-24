@@ -237,7 +237,7 @@ Each `curl` command prints the HTTP status code alongside the expected status, a
   - `DELETE /tickets/:ticketId/attachments/:attachmentId`.
 - **CSV Export & Import**:
   - `GET /tickets/export?projectId=` — downloadable CSV with 7 TDP-specified fields: id, title, description, status, priority, type, assigneeId.
-  - `POST /tickets/import` — stream-based CSV parser, per-row validation, partial success with summary `{ created, failed, errors }`.
+  - `POST /tickets/import` — stream-based CSV parser, per-row validation, partial success with summary `{ created, failed, errors }`. Each successfully persisted row records a **`CREATE`** audit for **`TICKET`** with `actor: USER` and `performedBy` set to the authenticated importer’s `userId` (before optional auto-assignment **`AUTO_ASSIGN`**).
 
 ### Phase 4 — Auto-Escalation, Auto-Assignment & Audit Logs
 
@@ -254,7 +254,7 @@ Each `curl` command prints the HTTP status code alongside the expected status, a
   - `AuditLog` entity — `id`, `action` (enum), `entityType`, `entityId`, `performedBy` (FK → User, nullable), `actor` (USER | SYSTEM), `timestamp`.
   - `GET /audit-logs` — query filters: `entityType`, `entityId`, `action`, `actor`.
   - Fault-tolerant logging: `AuditLogService.log()` wraps persistence in `try/catch` to never crash user-facing requests.
-  - Integrated across all state-changing operations (User, Project, Ticket, Comment CRUD; auto-escalation; auto-assignment).
+  - Integrated across all state-changing operations (User, Project, Ticket, Comment CRUD; ticket dependency and attachment mutations; CSV import—one **`TICKET` `CREATE`** per successful imported row; soft-delete restores; auto-escalation; auto-assignment).
 
 ### Swagger (OpenAPI) Integration
 

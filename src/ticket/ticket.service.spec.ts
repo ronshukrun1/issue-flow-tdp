@@ -17,6 +17,7 @@ import { User } from '../user/user.entity';
 import { ProjectService } from '../project/project.service';
 import { UserService } from '../user/user.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { AuditAction } from '../audit-log/enums/audit-action.enum';
 import { TicketStatus } from './enums/ticket-status.enum';
 import { TicketPriority } from './enums/ticket-priority.enum';
 import { TicketType } from './enums/ticket-type.enum';
@@ -470,24 +471,38 @@ describe('TicketService', () => {
   // ---------- importFromCsv ----------
 
   describe('importFromCsv', () => {
-    it('should create tickets from valid CSV rows and trigger auto-assign', async () => {
+    const importerUserId = 7;
+
+    it('should create tickets from valid CSV rows, audit CREATE per row, and trigger auto-assign', async () => {
       projectService.findOne.mockResolvedValue({} as never);
       repo.create.mockReturnValue(mockTicket);
-      repo.save.mockResolvedValue(mockTicket);
+      repo.save
+        .mockResolvedValueOnce({ ...mockTicket })
+        .mockResolvedValueOnce({ ...mockTicket, assigneeId: 9 });
       const qb = mockUserRepoQb();
-      qb.getRawOne.mockResolvedValue(undefined);
+      qb.getRawOne.mockResolvedValue({ userId: 9, openTicketCount: '0' });
 
       const csv = [
         'title,description,status,priority,type,assigneeId',
         'Bug,Desc,TODO,HIGH,BUG,',
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv));
+      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
       expect(result.created).toBe(1);
       expect(result.failed).toBe(0);
+      expect(auditLogService.log).toHaveBeenCalledWith({
+        action: AuditAction.CREATE,
+        entityType: 'TICKET',
+        entityId: mockTicket.id,
+        performedBy: importerUserId,
+        actor: 'USER',
+      });
+      expect(auditLogService.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: AuditAction.AUTO_ASSIGN, actor: 'SYSTEM' }),
+      );
     });
 
-    it('should collect errors for invalid rows', async () => {
+    it('should collect errors for invalid rows without audit logs', async () => {
       projectService.findOne.mockResolvedValue({} as never);
 
       const csv = [
@@ -495,13 +510,14 @@ describe('TicketService', () => {
         ',Desc,INVALID,HIGH,BUG,',
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv));
+      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
       expect(result.failed).toBe(1);
       expect(result.errors).toHaveLength(1);
       expect(result.errors[0]).toContain('Row 2');
+      expect(auditLogService.log).not.toHaveBeenCalled();
     });
 
-    it('should handle mixed valid and invalid rows', async () => {
+    it('should handle mixed valid and invalid rows with one CREATE audit per success', async () => {
       projectService.findOne.mockResolvedValue({} as never);
       repo.create.mockReturnValue(mockTicket);
       repo.save.mockResolvedValue(mockTicket);
@@ -514,9 +530,17 @@ describe('TicketService', () => {
         ',Bad,INVALID,HIGH,BUG,',
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv));
+      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
       expect(result.created).toBe(1);
       expect(result.failed).toBe(1);
+      expect(auditLogService.log).toHaveBeenCalledTimes(1);
+      expect(auditLogService.log).toHaveBeenCalledWith({
+        action: AuditAction.CREATE,
+        entityType: 'TICKET',
+        entityId: mockTicket.id,
+        performedBy: importerUserId,
+        actor: 'USER',
+      });
     });
 
     it('should skip auto-assign when assigneeId is provided in CSV', async () => {
@@ -530,9 +554,33 @@ describe('TicketService', () => {
         'Bug,Desc,TODO,HIGH,BUG,5',
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv));
+      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
       expect(result.created).toBe(1);
       expect(userRepo.createQueryBuilder).not.toHaveBeenCalled();
+      expect(auditLogService.log).toHaveBeenCalledTimes(1);
+      expect(auditLogService.log).toHaveBeenCalledWith({
+        action: AuditAction.CREATE,
+        entityType: 'TICKET',
+        entityId: assigned.id,
+        performedBy: importerUserId,
+        actor: 'USER',
+      });
+    });
+
+    it('should not audit when save fails for a valid row', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      repo.create.mockReturnValue(mockTicket);
+      repo.save.mockRejectedValue(new Error('db error'));
+
+      const csv = [
+        'title,description,status,priority,type,assigneeId',
+        'Bug,Desc,TODO,HIGH,BUG,5',
+      ].join('\n');
+
+      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      expect(result.created).toBe(0);
+      expect(result.failed).toBe(1);
+      expect(auditLogService.log).not.toHaveBeenCalled();
     });
   });
 

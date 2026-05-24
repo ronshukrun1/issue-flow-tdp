@@ -109,12 +109,14 @@ describe('TicketController', () => {
   });
 
   describe('importCsv', () => {
-    it('should delegate to service and return summary', async () => {
+    it('should delegate to service with authenticated userId and return summary', async () => {
       const summary = { created: 2, failed: 0, errors: [] as string[] };
       service.importFromCsv.mockResolvedValue(summary);
       const file = { buffer: Buffer.from('csv') } as Express.Multer.File;
-      const result = await controller.importCsv(file, 1);
+      const req = mockRequest(42);
+      const result = await controller.importCsv(file, 1, req);
       expect(result).toEqual(summary);
+      expect(service.importFromCsv).toHaveBeenCalledWith(1, file.buffer, 42);
     });
   });
 

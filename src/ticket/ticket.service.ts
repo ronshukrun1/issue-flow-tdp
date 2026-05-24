@@ -429,14 +429,16 @@ export class TicketService {
    * memory at once. Each row is validated individually; invalid rows
    * are collected in the `errors` array rather than aborting the import.
    *
-   * @param projectId  - The target project for imported tickets.
-   * @param fileBuffer - Raw CSV bytes from the uploaded file.
+   * @param projectId         - The target project for imported tickets.
+   * @param fileBuffer        - Raw CSV bytes from the uploaded file.
+   * @param importedByUserId  - Authenticated user performing the import (audit `performedBy`).
    * @returns A summary with counts of created/failed rows and error messages.
    * @throws {NotFoundException} When the project does not exist.
    */
   async importFromCsv(
     projectId: number,
     fileBuffer: Buffer,
+    importedByUserId: number,
   ): Promise<{ created: number; failed: number; errors: string[] }> {
     await this.projectService.findOne(projectId);
 
@@ -482,6 +484,13 @@ export class TicketService {
 
       try {
         const saved = await this.ticketRepository.save(ticket);
+        await this.auditLogService.log({
+          action: AuditAction.CREATE,
+          entityType: 'TICKET',
+          entityId: saved.id,
+          performedBy: importedByUserId,
+          actor: 'USER',
+        });
         if (saved.assigneeId === null) {
           await this.autoAssign(saved);
         }

@@ -118,8 +118,13 @@ export class TicketController {
     )
     file: Express.Multer.File,
     @Body('projectId', ParseIntPipe) projectId: number,
+    @Req() req: Request,
   ): Promise<{ created: number; failed: number; errors: string[] }> {
-    return this.ticketService.importFromCsv(projectId, file.buffer);
+    return this.ticketService.importFromCsv(
+      projectId,
+      file.buffer,
+      (req.user as { userId: number }).userId,
+    );
   }
 
   /**

@@ -2706,3 +2706,56 @@ ORDER BY COUNT(ticket.id) ASC, "user"."createdAt" ASC
 
 ---
 
+## Audit log completeness — CSV import & coverage check
+
+**Date:** Sunday, May 24, 2026  
+**Model:** Composer (Cursor Agent session)
+
+### Prompt
+
+> You are working on the IssueFlow Ticket Management Backend Platform. Before changes, review **README.md** (strict API contract) and **TDP_issueflow_requirements.pdf**, especially **section 3.1 Audit Log** and every feature that performs state-changing actions.
+>
+> **Goal:** Ensure the audit log matches the assignment: a **persistent, append-only** record of **all** state-changing actions, including requests by users and actions performed automatically by the system.
+>
+> **For now**, create audit logs **only for successful actions that actually changed system state**. **Failed** requests (**validation errors, 403, 404, 409**, etc.) must **not** create audit entries.
+>
+> **Constraints:**
+> - Do **not** change the public API contract from README.md.
+> - Do **not** add request body fields or change response body shapes.
+> - Do **not** add external write endpoints for audit logs — **`GET /audit-logs`** stays the **only** public Audit Log endpoint.
+> - Audit entries are created **internally by the server only**.
+>
+> **Verify / fix coverage** for:
+> - **USER:** User & Project & Ticket CREATE/UPDATE/DELETE/RESTORE; Comment CREATE/UPDATE/DELETE; dependency add/remove; attachment create/delete; **CSV import:** for **each** ticket successfully created via **`POST /tickets/import`**, a **TICKET CREATE** audit with **`actor = USER`**, **`performedBy =` authenticated userId**, **`entityType = TICKET`**, **`entityId =`** created ticket id.
+> - **SYSTEM:** **`AUTO_ASSIGN`** when the system actually assigns (no log if assignee stays null); **`AUTO_ESCALATE`** only when the scheduler **changes** priority or **`isOverdue`** — no audit when the run makes no changes.
+>
+> **Decisions:** No separate Mention audit (comment mutations enough); **no** Login/Logout audits; **no** audits for ordinary GETs; **`GET /audit-logs`** must return **only** fields defined in README. **Restore:** use **`RESTORE`** only if the enum already supports / can safely extend **`AuditAction`**; otherwise keep **UPDATE**, but restores must still be audited.
+>
+> **Table behavior:** Append-only; no update/delete API for audit rows. Rows include **action**, **entityType**, **entityId**, **performedBy** (authenticated user id for USER; **null** for SYSTEM), **actor**, **timestamp**.
+>
+> **Focus:** **`POST /tickets/import`** was the main gap — tickets could be created without matching **TICKET CREATE** audit rows — fix if present.
+>
+> **Testing:** Add/update tests only where needed; keep existing tests passing; prove import writes audits for successful rows; confirm **AUTO_ASSIGN** / **AUTO_ESCALATE** and normal CRUD audit behavior still work.
+>
+> **Documentation:** Update **run.md** and **prompts.md** while preserving structure, order, formatting, and writing style.
+
+### Changes Applied
+
+- **`TicketService.importFromCsv(projectId, buffer, importedByUserId)`** — after each successful **`save`**, calls **`auditLogService.log`** with **`AuditAction.CREATE`**, **`entityType: 'TICKET'`**, **`entityId: saved.id`**, **`performedBy: importedByUserId`**, **`actor: 'USER'`**, then runs existing **`autoAssign`** when **`assigneeId`** is null (unchanged **`AUTO_ASSIGN`** semantics).
+- **`TicketController.importCsv`** — passes **`req.user.userId`** into the service (multipart body unchanged).
+- **Tests** — **`ticket.service.spec`** / **`ticket.controller.spec`** assert CREATE audit on import, no audit on invalid rows or **`save`** failure, and **`importFromCsv(..., userId)`** wiring.
+- Existing controller-level audits for User, Project, Ticket, Comment, dependencies, attachments, and scheduler paths were already correct; no README contract changes.
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `src/ticket/ticket.service.ts` | Per-success-row **`TICKET` `CREATE`** audit in **`importFromCsv`** |
+| `src/ticket/ticket.controller.ts` | **`@Req()`** → pass importer **`userId`** |
+| `src/ticket/ticket.service.spec.ts` | Import audit expectations + **`AuditAction`** import |
+| `src/ticket/ticket.controller.spec.ts` | **`importCsv`** passes **`userId`** to service |
+| `run.md` | CSV import + Audit Log integration bullets |
+| `prompts.md` | This log entry |
+
+---
+
