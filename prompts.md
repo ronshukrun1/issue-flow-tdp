@@ -2854,3 +2854,97 @@ During manual **Postman** testing, uploading a valid **`notes.txt`** with report
 
 ---
 
+## Users / Auth — TDP clarification (`POST /users`, bootstrap admin only)
+
+**Date:** Sunday, May 24, 2026  
+**Model:** Composer (Cursor Agent session)
+
+### Context & rationale
+
+Official **TDP** clarification aligned user onboarding with secure practice: **only `ADMIN`** may create accounts via **`POST /users`**; **`POST /users`** must accept an explicit **`password`** (validated and hashed); **self-registration is out of scope**; the **seeded bootstrap `admin`** must remain usable for **first JWT** issuance. No weakening of JWT or RBAC; response shapes unchanged (no **`password`** in JSON).
+
+### Implementation summary
+
+1. **`POST /users`** — **`JWTAuthGuard`** (controller-level / global as before) **`+ RolesGuard`** with **`@Roles(Role.ADMIN)`** on **`UserController#create`**. **`DEVELOPER`** and anonymous (no JWT / no **`user`** on request) → **403** via **`RolesGuard`**.
+2. **`CreateUserDto`** — **`password`**: **`@Transform` trim**, **`@IsNotEmpty`** (message **`password is required to create a new user`**), **`@MinLength(8)`**, **`@MaxLength(128)`**, **`ApiProperty`**; listed in Swagger.
+3. **`UserService#create`** — **bcrypt** hash from **`dto.password` only**; **no default password** for normal creation. **`onModuleInit` seed**: single **`ADMIN`** **`admin`/`secret`**/`admin@issueflow.com` — **only** this path bypasses **`POST /users`**.
+4. **Responses** — password never returned (**`passwordHash`** **`select: false`**, **`@Exclude()`** on **`passwordHash`** unchanged).
+
+### Tests
+
+- **`create-user.dto.spec`** — **`class-validator`**: missing/empty/too-short password vs valid payload.
+- **`user-post-users-roles-guard.spec`** — **`RolesGuard`**: **`ADMIN` allowed**, **`DEVELOPER` / no user forbidden**.
+- **`user-create-and-login.flow.spec`** — real bcrypt: **`UserService#create`** then **`AuthService#login`** with supplied password succeeds (no mocks for bcrypt compare).
+- **`user.controller.spec`** — **`Reflect.getMetadata`** asserts **`Role.ADMIN`** on **`create`**.
+- **`user.service.spec`** — removed expectation of implicit default password on create.
+
+### Documentation
+
+- **`run.md`** — **Initial Admin Seed** table unchanged; numbered **first login → ADMIN `POST /users` + required password → login as new user**; note that bootstrap **`admin`** is the only account not created via **`POST /users`**.
+- **`README.md`** — Users table **`POST /users`** row notes **`password`** in body and **`ADMIN`** requirement.
+- **`tests.sh`** — **`POST /users`** examples include **`password`** (≥ **8** chars).
+
+### API contract confirmation
+
+- **`POST /users`** unchanged path; success body still **`id`, `username`, `email`, `fullName`, `role`** (no **`password`** / hash).
+- **Login** **`POST /auth/login`** unchanged; users created via **`POST /users`** authenticate with body **`password`**.
+- **Admin seed**: **`admin` / `secret` / ADMIN** — preserved for bootstrap.
+
+### Files touched
+
+| File | Change |
+|------|--------|
+| `src/user/user.controller.ts` | **`@Roles(Role.ADMIN)`** on **`create`**; docs |
+| `src/user/dto/create-user.dto.ts` | Required **`password`**, validation messages, Swagger |
+| `src/user/user.service.ts` | Hash only **`dto.password`**; seed password constant **`secret`** |
+| `src/user/user.service.spec.ts` | Removed default-password test |
+| `src/user/user.controller.spec.ts` | Metadata **`ADMIN`** assertion |
+| `src/user/create-user.dto.spec.ts` | **New** — DTO validation |
+| `src/user/user-post-users-roles-guard.spec.ts` | **New** — RBAC guard |
+| `src/user/user-create-and-login.flow.spec.ts` | **New** — create + login flow |
+| `run.md`, `README.md`, `tests.sh` | Bootstrap + onboarding + payloads |
+| `prompts.md` | This entry |
+
+---
+
+## Users API — ADMIN-only deletion (`DELETE /users/:userId`)
+
+**Date:** Sunday, May 24, 2026  
+**Model:** Composer (Cursor Agent session)
+
+### Context & rationale
+
+After **`POST /users`** was aligned with **TDP** (**`ADMIN`**-only creation, explicit **`password`**), **`DELETE /users/:userId`** lacked **`@Roles(Role.ADMIN)`**, so any authenticated JWT bearer could delete users. This change applies the **same** **`RolesGuard`** contract as **`POST /users`**: only **`ADMIN`** may delete; **`DEVELOPER`** and anonymous callers get **403**. Global **`JwtAuthGuard`** / **`RolesGuard`** wiring is unchanged.
+
+### Implementation summary
+
+1. **`DELETE /users/:userId`** — **`@Roles(Role.ADMIN)`** on **`UserController#remove`**, placed above **`@Delete(':userId')`**, mirroring **`create`**.
+2. **Documentation** — controller class JSDoc and **`remove`** JSDoc state **ADMIN-only** parity with **`POST /users`**.
+3. **Contract** — path, **200 OK** success semantics, empty body (per **README**) unchanged except that unauthorised access is explicitly **403** via **`ForbiddenException`** (**`Insufficient permissions`**).
+
+### Tests
+
+- **`user.controller.spec`** — **`Reflect.getMetadata(ROLES_KEY, UserController.prototype.remove) === [Role.ADMIN]`** (same metadata pattern as **`create`**).
+- **`user-post-users-roles-guard.spec`** — refactored **`describe.each`** over **`create`** and **`remove`**: **ADMIN allows**; **DEVELOPER** and missing **`request.user`** **throw**.
+- Existing **`remove`** delegation tests (**audit**, **`NotFoundException`**) unchanged and still model an **ADMIN** request via **`mockRequest`**.
+
+### Documentation
+
+- **`run.md`** — onboarding section reframed as **user lifecycle**: step adds **`DELETE`** **ADMIN-only** and **403** for non-**ADMIN**; final note mentions **`DELETE`** alongside **`POST /users`**.
+- **`README.md`** — **`DELETE`** row notes **authenticated `ADMIN`** requirement.
+- **`prompts.md`** — this entry.
+
+### API contract confirmation
+
+- No changes to **`userService.remove`**, audit payload shape for deletes, **`POST /users`**, **`CreateUserDto`**, bcrypt, JWT login, or seed **`admin`**.
+- **`tests.sh`** already calls **`DELETE /users`** with the **admin** Bearer token — still valid.
+
+### Files touched
+
+| File | Change |
+|------|--------|
+| `src/user/user.controller.ts` | **`@Roles(Role.ADMIN)`** on **`remove`**; JSDoc |
+| `src/user/user.controller.spec.ts` | **`ROLES`** metadata for **`remove`** |
+| `src/user/user-post-users-roles-guard.spec.ts` | **`describe.each`** for **`create`** + **`remove`** |
+| `run.md`, `README.md`, `prompts.md` | **ADMIN-only** delete / lifecycle wording |
+

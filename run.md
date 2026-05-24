@@ -83,9 +83,16 @@ On first startup, if the `users` table is empty, the application automatically s
 | Email    | `admin@issueflow.com` |
 | Role     | `ADMIN`             |
 
-Use these credentials with `POST /auth/login` to obtain a JWT and begin creating additional users.
+Use these credentials with `POST /auth/login` to obtain a JWT.
 
-> **Note:** Any user created via `POST /users` without an explicit `password` field will default to the password `secret`.
+**Onboarding / user lifecycle (TDP):**
+
+1. **First login:** `POST /auth/login` with **`admin` / `secret`** (the seeded **`ADMIN`** — self-registration is not supported).
+2. **Create users:** Call **`POST /users`** with **`Authorization: Bearer <JWT>`** — the caller must be **`ADMIN`**. The JSON body **must** include **`password`** (plain text, at least **8** characters after trimming). The server stores a **bcrypt hash** and **never** returns `password` in the response.
+3. **Delete users:** **`DELETE /users/:userId`** requires the same **`ADMIN`** Bearer token. **`DEVELOPER`** callers and anonymous requests receive **403** (mirrors **`POST /users`** access control).
+4. **New user login:** Authenticate with `POST /auth/login` using the **username and password** supplied in step 2 (for accounts created via **`POST /users`**).
+
+> **Note:** Only the bootstrap **admin** account is created without `POST /users`. All other users must be created by an **ADMIN** via **`POST /users`** with an explicit **`password`** field. Only **`ADMIN`** may remove users via **`DELETE /users/:userId`**.
 
 ## 5. Swagger (OpenAPI) Documentation
 

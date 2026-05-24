@@ -231,21 +231,6 @@ describe('UserService', () => {
       expect(result).not.toHaveProperty('password');
     });
 
-    it('should use default password when none is provided', async () => {
-      const dtoWithoutPassword: CreateUserDto = {
-        username: 'newuser',
-        email: 'new@example.com',
-        fullName: 'New User',
-        role: Role.DEVELOPER,
-      };
-      repo.create.mockReturnValue(mockUser);
-      repo.save.mockResolvedValue(mockUser);
-      repo.findOneByOrFail.mockResolvedValue(mockUserWithoutPassword as User);
-
-      await service.create(dtoWithoutPassword);
-      expect(bcrypt.hash).toHaveBeenCalledWith('secret', 10);
-    });
-
     it('should throw ConflictException on duplicate username/email', async () => {
       repo.create.mockReturnValue(mockUser);
       repo.save.mockRejectedValue(makeQueryFailedError('23505'));

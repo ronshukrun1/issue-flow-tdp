@@ -185,7 +185,7 @@ section "2. Users APIs"
 do_curl -X POST "$BASE_URL/users" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{ "username": "jdoe", "email": "jdoe@example.com", "fullName": "John Doe", "role": "DEVELOPER" }'
+  -d '{ "username": "jdoe", "email": "jdoe@example.com", "fullName": "John Doe", "role": "DEVELOPER", "password": "jdoePass8" }'
 
 USER1_ID=$(echo "$RESP_BODY" | jq -r '.id')
 if ! [[ "$USER1_ID" =~ ^[0-9]+$ ]]; then
@@ -202,7 +202,7 @@ echo -e "  ${GREEN}✓${RESET} ${DIM}POST /users (jdoe)${RESET} ${GREEN}[resolve
 do_curl -X POST "$BASE_URL/users" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{ "username": "asmith", "email": "asmith@example.com", "fullName": "Alice Smith", "role": "DEVELOPER" }'
+  -d '{ "username": "asmith", "email": "asmith@example.com", "fullName": "Alice Smith", "role": "DEVELOPER", "password": "asmithPass9" }'
 
 USER2_ID=$(echo "$RESP_BODY" | jq -r '.id')
 if ! [[ "$USER2_ID" =~ ^[0-9]+$ ]]; then

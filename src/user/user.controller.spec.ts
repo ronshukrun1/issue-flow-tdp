@@ -9,6 +9,7 @@ import { User } from './user.entity';
 import { Role } from './role.enum';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { ROLES_KEY } from '../common/decorators/roles.decorator';
 
 const now = new Date();
 
@@ -87,6 +88,15 @@ describe('UserController', () => {
   });
 
   describe('create', () => {
+    it('POST /users handler is ADMIN-only (@Roles)', () => {
+      expect(
+        Reflect.getMetadata(
+          ROLES_KEY,
+          UserController.prototype.create,
+        ),
+      ).toEqual([Role.ADMIN]);
+    });
+
     const dto: CreateUserDto = {
       username: 'jdoe',
       email: 'jdoe@example.com',
@@ -132,6 +142,15 @@ describe('UserController', () => {
   });
 
   describe('remove', () => {
+    it('DELETE /users/:userId handler is ADMIN-only (@Roles)', () => {
+      expect(
+        Reflect.getMetadata(
+          ROLES_KEY,
+          UserController.prototype.remove,
+        ),
+      ).toEqual([Role.ADMIN]);
+    });
+
     it('should delete the user and log audit', async () => {
       service.remove.mockResolvedValue(undefined);
       const req = mockRequest(10);

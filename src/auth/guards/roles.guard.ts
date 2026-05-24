@@ -8,6 +8,10 @@ import { Reflector } from '@nestjs/core';
 import { Role } from '../../user/role.enum';
 import { ROLES_KEY } from '../../common/decorators/roles.decorator';
 
+/** Returned when the caller lacks a role required by `@Roles()`. */
+export const ROLES_FORBIDDEN_MESSAGE =
+  'This action requires administrator privileges.';
+
 /**
  * Authorisation guard that enforces the `@Roles()` decorator.
  *
@@ -40,7 +44,7 @@ export class RolesGuard implements CanActivate {
 
     const userRole = request.user?.role;
     if (!userRole || !requiredRoles.includes(userRole)) {
-      throw new ForbiddenException('Insufficient permissions');
+      throw new ForbiddenException(ROLES_FORBIDDEN_MESSAGE);
     }
 
     return true;

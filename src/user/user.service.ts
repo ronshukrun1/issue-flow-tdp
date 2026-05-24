@@ -21,8 +21,8 @@ interface PostgresDriverError {
 /** Number of salt rounds used by bcrypt when hashing passwords. */
 const BCRYPT_SALT_ROUNDS = 10;
 
-/** Default password assigned when none is provided in CreateUserDto. */
-const DEFAULT_PASSWORD = 'secret';
+/** Bootstrap password used only for the seeded `admin` account (first login). */
+const SEEDED_ADMIN_PASSWORD = 'secret';
 
 /**
  * Type guard that checks whether a caught error is a TypeORM
@@ -42,9 +42,9 @@ function isQueryFailedWithCode(
 /**
  * Encapsulates all business logic for user management.
  *
- * Implements {@link OnModuleInit} to seed an initial admin account
- * when the users table is empty, resolving the bootstrap deadlock
- * where `POST /users` is admin-protected but no admin exists yet.
+ * Implements {@link OnModuleInit} to seed an initial **`admin`** account
+ * when the users table is empty, so operators can authenticate and invoke
+ * admin-only routes (including `POST /users`) with a JWT.
  */
 @Injectable()
 export class UserService implements OnModuleInit {
@@ -63,7 +63,7 @@ export class UserService implements OnModuleInit {
     const count = await this.userRepository.count();
     if (count > 0) return;
 
-    const hashedPassword = await bcrypt.hash(DEFAULT_PASSWORD, BCRYPT_SALT_ROUNDS);
+    const hashedPassword = await bcrypt.hash(SEEDED_ADMIN_PASSWORD, BCRYPT_SALT_ROUNDS);
     const admin = this.userRepository.create({
       username: 'admin',
       email: 'admin@issueflow.com',
@@ -135,20 +135,19 @@ export class UserService implements OnModuleInit {
   }
 
   /**
-   * Creates and persists a new user after hashing their password.
+   * Creates and persists a new user after bcrypt-hashing **`dto.password`**.
    *
-   * When `dto.password` is omitted the default password (`'secret'`)
-   * is used. The hash is never returned in the response.
+   * Callers **must** supply a plaintext password (`CreateUserDto` validation).
+   * The hash is never returned in the HTTP response (`password` column is excluded).
    *
-   * @param dto - Validated creation payload.
+   * @param dto - Validated creation payload (includes **`password`**).
    * @returns The newly persisted {@link User} entity (password excluded from response).
    * @throws {ConflictException} When the username or email already exists (HTTP 409).
    */
   async create(dto: CreateUserDto): Promise<User> {
     try {
-      const plainPassword = dto.password ?? DEFAULT_PASSWORD;
       const hashedPassword = await bcrypt.hash(
-        plainPassword,
+        dto.password,
         BCRYPT_SALT_ROUNDS,
       );
       const user = this.userRepository.create({
