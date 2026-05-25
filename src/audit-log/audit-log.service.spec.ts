@@ -82,7 +82,12 @@ describe('AuditLogService', () => {
     });
 
     it('should allow null performedBy for system actions', async () => {
-      const systemEntry = { ...mockAuditLog, performedBy: null, actor: 'SYSTEM', action: AuditAction.AUTO_ESCALATE };
+      const systemEntry = {
+        ...mockAuditLog,
+        performedBy: null,
+        actor: 'SYSTEM',
+        action: AuditAction.AUTO_ESCALATE,
+      };
       repo.create.mockReturnValue(systemEntry);
       repo.save.mockResolvedValue(systemEntry);
 
@@ -116,14 +121,24 @@ describe('AuditLogService', () => {
     it('should batch-insert multiple audit log entries', async () => {
       const entry1 = { ...mockAuditLog, entityId: 1 };
       const entry2 = { ...mockAuditLog, entityId: 2 };
-      repo.create
-        .mockReturnValueOnce(entry1)
-        .mockReturnValueOnce(entry2);
+      repo.create.mockReturnValueOnce(entry1).mockReturnValueOnce(entry2);
       repo.save.mockResolvedValue([entry1, entry2] as never);
 
       const entries = [
-        { action: AuditAction.AUTO_ESCALATE, entityType: 'TICKET', entityId: 1, performedBy: null, actor: 'SYSTEM' },
-        { action: AuditAction.AUTO_ESCALATE, entityType: 'TICKET', entityId: 2, performedBy: null, actor: 'SYSTEM' },
+        {
+          action: AuditAction.AUTO_ESCALATE,
+          entityType: 'TICKET',
+          entityId: 1,
+          performedBy: null,
+          actor: 'SYSTEM',
+        },
+        {
+          action: AuditAction.AUTO_ESCALATE,
+          entityType: 'TICKET',
+          entityId: 2,
+          performedBy: null,
+          actor: 'SYSTEM',
+        },
       ];
 
       const result = await service.logMany(entries);
@@ -148,25 +163,27 @@ describe('AuditLogService', () => {
     it('should apply entityType filter', async () => {
       const qb = repo.createQueryBuilder('log');
       await service.findAll({ entityType: 'TICKET' });
-      expect(qb.andWhere).toHaveBeenCalledWith(
-        'log.entityType = :entityType',
-        { entityType: 'TICKET' },
-      );
+      expect(qb.andWhere).toHaveBeenCalledWith('log.entityType = :entityType', {
+        entityType: 'TICKET',
+      });
     });
 
     it('should apply multiple filters simultaneously', async () => {
       const qb = repo.createQueryBuilder('log');
-      await service.findAll({ entityType: 'USER', action: 'CREATE', actor: 'USER' });
+      await service.findAll({
+        entityType: 'USER',
+        action: 'CREATE',
+        actor: 'USER',
+      });
       expect(qb.andWhere).toHaveBeenCalledTimes(3);
     });
 
     it('should apply entityId filter', async () => {
       const qb = repo.createQueryBuilder('log');
       await service.findAll({ entityId: 42 });
-      expect(qb.andWhere).toHaveBeenCalledWith(
-        'log.entityId = :entityId',
-        { entityId: 42 },
-      );
+      expect(qb.andWhere).toHaveBeenCalledWith('log.entityId = :entityId', {
+        entityId: 42,
+      });
     });
   });
 });

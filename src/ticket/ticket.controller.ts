@@ -21,7 +21,13 @@ import {
   MaxTicketCsvSizeValidator,
   CsvOriginalNameValidator,
 } from './csv-import-file.validators';
-import { ApiTags, ApiBearerAuth, ApiConsumes, ApiBody, ApiOkResponse } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiBearerAuth,
+  ApiConsumes,
+  ApiBody,
+  ApiOkResponse,
+} from '@nestjs/swagger';
 import { ApiEmptyOk } from '../common/swagger/api-empty-ok.decorator';
 import { CsvImportSummaryDto } from './dto/csv-import-summary.dto';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -36,6 +42,15 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../user/role.enum';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { AuditAction } from '../audit-log/enums/audit-action.enum';
+
+interface DeletedTicketResponse {
+  id: number;
+  title: string;
+  status: Ticket['status'];
+  priority: Ticket['priority'];
+  type: Ticket['type'];
+  projectId: number;
+}
 
 /**
  * Handles all HTTP requests for the `/tickets` resource.
@@ -70,10 +85,18 @@ export class TicketController {
    */
   @Roles(Role.ADMIN)
   @Get('deleted')
-  findDeleted(
+  async findDeleted(
     @Query('projectId', ParseIntPipe) projectId: number,
-  ): Promise<Ticket[]> {
-    return this.ticketService.findDeleted(projectId);
+  ): Promise<DeletedTicketResponse[]> {
+    const tickets = await this.ticketService.findDeleted(projectId);
+    return tickets.map(({ id, title, status, priority, type, projectId }) => ({
+      id,
+      title,
+      status,
+      priority,
+      type,
+      projectId,
+    }));
   }
 
   // ── CSV Export / Import ─────────────────────────────────────────
@@ -88,10 +111,7 @@ export class TicketController {
   ): Promise<void> {
     const csv = await this.ticketService.exportToCsv(projectId);
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader(
-      'Content-Disposition',
-      'attachment; filename="tickets.csv"',
-    );
+    res.setHeader('Content-Disposition', 'attachment; filename="tickets.csv"');
     res.send(csv);
   }
 
@@ -145,9 +165,7 @@ export class TicketController {
    * `GET /tickets/:ticketId` — returns a single ticket by ID.
    */
   @Get(':ticketId')
-  findOne(
-    @Param('ticketId', ParseIntPipe) ticketId: number,
-  ): Promise<Ticket> {
+  findOne(@Param('ticketId', ParseIntPipe) ticketId: number): Promise<Ticket> {
     return this.ticketService.findOne(ticketId);
   }
 

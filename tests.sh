@@ -174,6 +174,9 @@ do_curl -X GET "$BASE_URL/auth/me" \
   -H "Authorization: Bearer $TOKEN"
 assert_status "GET" "/auth/me" "200"
 
+AUTH_USER_ID=$(echo "$RESP_BODY" | jq -r '.id')
+require_id "AUTH_USER_ID" "$AUTH_USER_ID"
+
 ###############################################################################
 # 2. Users APIs
 ###############################################################################
@@ -393,7 +396,7 @@ section "5. Comments APIs"
 do_curl -X POST "$BASE_URL/tickets/$TICKET1_ID/comments" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{ "content": "Hello @jdoe! Please review this ticket." }'
+  -d "{ \"authorId\": $AUTH_USER_ID, \"content\": \"Hello @jdoe! Please review this ticket.\" }"
 
 COMMENT_ID=$(echo "$RESP_BODY" | jq -r '.id')
 if ! [[ "$COMMENT_ID" =~ ^[0-9]+$ ]]; then

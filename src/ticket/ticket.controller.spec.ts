@@ -35,7 +35,9 @@ const mockTicket: Ticket = {
 };
 
 const mockRequest = (userId: number): Request =>
-  ({ user: { userId, username: 'admin', role: Role.ADMIN } }) as unknown as Request;
+  ({
+    user: { userId, username: 'admin', role: Role.ADMIN },
+  }) as unknown as Request;
 
 describe('TicketController', () => {
   let controller: TicketController;
@@ -87,15 +89,26 @@ describe('TicketController', () => {
 
     it('should propagate NotFoundException', async () => {
       service.findByProject.mockRejectedValue(new NotFoundException());
-      await expect(controller.findByProject(999)).rejects.toThrow(NotFoundException);
+      await expect(controller.findByProject(999)).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
   describe('findDeleted', () => {
-    it('should return soft-deleted tickets for a project', async () => {
+    it('should return only README fields for soft-deleted tickets', async () => {
       const deleted = { ...mockTicket, deletedAt: now };
       service.findDeleted.mockResolvedValue([deleted]);
-      expect(await controller.findDeleted(1)).toEqual([deleted]);
+      expect(await controller.findDeleted(1)).toEqual([
+        {
+          id: deleted.id,
+          title: deleted.title,
+          status: deleted.status,
+          priority: deleted.priority,
+          type: deleted.type,
+          projectId: deleted.projectId,
+        },
+      ]);
     });
   });
 
@@ -110,7 +123,11 @@ describe('TicketController', () => {
 
   describe('importCsv', () => {
     it('should delegate to service with authenticated userId and return summary', async () => {
-      const summary = { created: 2, failed: 0, errors: [] as import('./csv-import-row-error').CsvImportRowError[] };
+      const summary = {
+        created: 2,
+        failed: 0,
+        errors: [] as import('./csv-import-row-error').CsvImportRowError[],
+      };
       service.importFromCsv.mockResolvedValue(summary);
       const file = { buffer: Buffer.from('csv') } as Express.Multer.File;
       const req = mockRequest(42);
@@ -154,7 +171,9 @@ describe('TicketController', () => {
 
     it('should propagate BadRequestException', async () => {
       service.create.mockRejectedValue(new BadRequestException());
-      await expect(controller.create({ ...dto, projectId: 999 }, mockRequest(10))).rejects.toThrow(BadRequestException);
+      await expect(
+        controller.create({ ...dto, projectId: 999 }, mockRequest(10)),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 
@@ -162,7 +181,10 @@ describe('TicketController', () => {
     const dto: UpdateTicketDto = { title: 'Updated title' };
 
     it('should update the ticket and log audit without returning a body', async () => {
-      service.update.mockResolvedValue({ ...mockTicket, title: 'Updated title' });
+      service.update.mockResolvedValue({
+        ...mockTicket,
+        title: 'Updated title',
+      });
       const req = mockRequest(10);
       const result = await controller.update(1, dto, req);
       expect(result).toBeUndefined();
@@ -171,7 +193,9 @@ describe('TicketController', () => {
 
     it('should propagate BadRequestException for DONE ticket', async () => {
       service.update.mockRejectedValue(new BadRequestException());
-      await expect(controller.update(1, dto, mockRequest(10))).rejects.toThrow(BadRequestException);
+      await expect(controller.update(1, dto, mockRequest(10))).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 
@@ -185,7 +209,9 @@ describe('TicketController', () => {
 
     it('should propagate NotFoundException', async () => {
       service.softRemove.mockRejectedValue(new NotFoundException());
-      await expect(controller.remove(999, mockRequest(10))).rejects.toThrow(NotFoundException);
+      await expect(controller.remove(999, mockRequest(10))).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -199,7 +225,9 @@ describe('TicketController', () => {
 
     it('should propagate NotFoundException', async () => {
       service.restore.mockRejectedValue(new NotFoundException());
-      await expect(controller.restore(999, mockRequest(10))).rejects.toThrow(NotFoundException);
+      await expect(controller.restore(999, mockRequest(10))).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -207,13 +235,17 @@ describe('TicketController', () => {
     it('should delegate to service and log audit', async () => {
       service.addDependency.mockResolvedValue(undefined);
       const req = mockRequest(10);
-      await expect(controller.addDependency(1, { blockedBy: 42 }, req)).resolves.toBeUndefined();
+      await expect(
+        controller.addDependency(1, { blockedBy: 42 }, req),
+      ).resolves.toBeUndefined();
       expect(auditLogService.log).toHaveBeenCalled();
     });
 
     it('should propagate BadRequestException', async () => {
       service.addDependency.mockRejectedValue(new BadRequestException());
-      await expect(controller.addDependency(1, { blockedBy: 42 }, mockRequest(10))).rejects.toThrow(BadRequestException);
+      await expect(
+        controller.addDependency(1, { blockedBy: 42 }, mockRequest(10)),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 
@@ -222,7 +254,11 @@ describe('TicketController', () => {
       service.getDependencies.mockResolvedValue([mockTicket]);
       const result = await controller.getDependencies(1);
       expect(result).toEqual([
-        { id: mockTicket.id, title: mockTicket.title, status: mockTicket.status },
+        {
+          id: mockTicket.id,
+          title: mockTicket.title,
+          status: mockTicket.status,
+        },
       ]);
     });
   });
@@ -231,13 +267,17 @@ describe('TicketController', () => {
     it('should delegate to service and log audit', async () => {
       service.removeDependency.mockResolvedValue(undefined);
       const req = mockRequest(10);
-      await expect(controller.removeDependency(1, 42, req)).resolves.toBeUndefined();
+      await expect(
+        controller.removeDependency(1, 42, req),
+      ).resolves.toBeUndefined();
       expect(auditLogService.log).toHaveBeenCalled();
     });
 
     it('should propagate NotFoundException', async () => {
       service.removeDependency.mockRejectedValue(new NotFoundException());
-      await expect(controller.removeDependency(1, 42, mockRequest(10))).rejects.toThrow(NotFoundException);
+      await expect(
+        controller.removeDependency(1, 42, mockRequest(10)),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 });

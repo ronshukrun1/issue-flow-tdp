@@ -1,4 +1,12 @@
-import { Controller, Post, Get, Body, Req, HttpCode, HttpStatus } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Get,
+  Body,
+  Req,
+  HttpCode,
+  HttpStatus,
+} from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOkResponse } from '@nestjs/swagger';
 import { Request } from 'express';
 import { AuthService } from './auth.service';
@@ -36,9 +44,7 @@ export class AuthController {
    */
   @Get('me')
   getProfile(@Req() req: Request) {
-    return this.authService.getProfile(
-      (req.user as { userId: number }).userId,
-    );
+    return this.authService.getProfile((req.user as { userId: number }).userId);
   }
 
   /**

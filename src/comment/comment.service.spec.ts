@@ -35,6 +35,12 @@ const mockUser: User = {
   updatedAt: now,
 };
 
+const mockMentionedUser = {
+  id: mockUser.id,
+  username: mockUser.username,
+  fullName: mockUser.fullName,
+} as User;
+
 const mockMentionLink = {
   commentsId: 1,
   usersId: mockUser.id,
@@ -49,7 +55,7 @@ const mockComment: Comment = {
   author: undefined as never,
   content: 'Hello @bob',
   mentionLinks: [mockMentionLink],
-  mentionedUsers: [mockUser],
+  mentionedUsers: [mockMentionedUser],
   version: 1,
   createdAt: now,
   updatedAt: now,
@@ -163,10 +169,11 @@ describe('CommentService', () => {
   // ---------- create ----------
 
   describe('create', () => {
+    const authorId = 1;
     const dto: CreateCommentDto = {
+      authorId,
       content: 'Hello @bob',
     };
-    const authorId = 1;
 
     it('should validate ticket and author, parse mentions, and create a comment', async () => {
       ticketService.findOne.mockResolvedValue({} as never);
@@ -190,9 +197,9 @@ describe('CommentService', () => {
         new NotFoundException('User with ID 999 not found'),
       );
 
-      await expect(
-        service.create(1, 999, dto),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.create(1, 999, dto)).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('should handle content with no mentions', async () => {
@@ -210,6 +217,7 @@ describe('CommentService', () => {
       repo.findOneOrFail.mockResolvedValue(noMentionComment);
 
       const result = await service.create(1, authorId, {
+        authorId,
         content: 'No mentions',
       });
       expect(result.mentionedUsers).toEqual([]);
@@ -346,20 +354,20 @@ describe('CommentService', () => {
       const commentByBob = { ...mockComment, authorId: 2 };
       txnCommentManager.findOne.mockResolvedValue(commentByBob);
 
-      await expect(
-        service.remove(1, 1, actorAliceDeveloper),
-      ).rejects.toThrow(ForbiddenException);
-      await expect(
-        service.remove(1, 1, actorAliceDeveloper),
-      ).rejects.toThrow('You are not allowed to modify this comment.');
+      await expect(service.remove(1, 1, actorAliceDeveloper)).rejects.toThrow(
+        ForbiddenException,
+      );
+      await expect(service.remove(1, 1, actorAliceDeveloper)).rejects.toThrow(
+        'You are not allowed to modify this comment.',
+      );
       expect(txnCommentManager.remove).not.toHaveBeenCalled();
     });
 
     it('should throw NotFoundException when comment does not exist', async () => {
       txnCommentManager.findOne.mockResolvedValue(null);
-      await expect(
-        service.remove(1, 999, actorAliceDeveloper),
-      ).rejects.toThrow(NotFoundException);
+      await expect(service.remove(1, 999, actorAliceDeveloper)).rejects.toThrow(
+        NotFoundException,
+      );
       expect(txnCommentManager.remove).not.toHaveBeenCalled();
     });
 
@@ -370,12 +378,12 @@ describe('CommentService', () => {
         }),
       );
 
-      await expect(
-        service.remove(1, 1, actorAliceDeveloper),
-      ).rejects.toThrow(ConflictException);
-      await expect(
-        service.remove(1, 1, actorAliceDeveloper),
-      ).rejects.toThrow(PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE);
+      await expect(service.remove(1, 1, actorAliceDeveloper)).rejects.toThrow(
+        ConflictException,
+      );
+      await expect(service.remove(1, 1, actorAliceDeveloper)).rejects.toThrow(
+        PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE,
+      );
       expect(txnCommentManager.remove).not.toHaveBeenCalled();
     });
   });

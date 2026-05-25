@@ -18,7 +18,9 @@ import { Role } from '../role.enum';
 export class UpdateUserDto {
   /** Updated display name (1–100 characters, trimmed). */
   @IsOptional()
-  @Transform(({ value }: { value: string }) => value?.trim())
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @MinLength(1)
   @MaxLength(100)

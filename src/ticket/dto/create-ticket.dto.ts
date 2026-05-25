@@ -5,6 +5,7 @@ import {
   IsInt,
   IsOptional,
   IsDateString,
+  ValidateIf,
   MinLength,
   MaxLength,
 } from 'class-validator';
@@ -21,7 +22,9 @@ import { TicketType } from '../enums/ticket-type.enum';
  */
 export class CreateTicketDto {
   /** Ticket title (1-255 characters, trimmed). */
-  @Transform(({ value }: { value: string }) => value?.trim())
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @IsNotEmpty()
   @MinLength(1)
@@ -29,7 +32,9 @@ export class CreateTicketDto {
   title!: string;
 
   /** Ticket description (1-5000 characters, trimmed). */
-  @Transform(({ value }: { value: string }) => value?.trim())
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @IsNotEmpty()
   @MinLength(1)
@@ -64,12 +69,17 @@ export class CreateTicketDto {
   /** Optional assignee user ID. */
   @ApiPropertyOptional()
   @IsOptional()
-  @IsInt()
-  assigneeId?: number;
+  @ValidateIf((o) => o.assigneeId !== null)
+  @IsInt({ message: 'assigneeId must be an integer' })
+  assigneeId?: number | null;
 
   /** Optional due date in ISO-8601 format. */
   @ApiPropertyOptional({ example: '2025-12-31T23:59:59.000Z' })
   @IsOptional()
-  @IsDateString()
-  dueDate?: string;
+  @ValidateIf((o) => o.dueDate !== null)
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsDateString({}, { message: 'dueDate must be a valid ISO-8601 date string' })
+  dueDate?: string | null;
 }

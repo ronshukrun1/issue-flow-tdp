@@ -97,7 +97,8 @@ export class InclusiveMaxAttachmentSizeValidator extends FileValidator<{
     return file.size <= this.validationOptions.maxBytes;
   }
 
-  buildErrorMessage(_file?: Express.Multer.File): string {
+  buildErrorMessage(file?: Express.Multer.File): string {
+    void file;
     return `Attachment file exceeds the maximum allowed size of ${this.validationOptions.maxBytes} bytes (10 MB)`;
   }
 }

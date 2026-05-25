@@ -8,6 +8,7 @@ import {
   Body,
   Req,
   ParseIntPipe,
+  BadRequestException,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
@@ -25,10 +26,9 @@ import { Role } from '../user/role.enum';
 /**
  * Handles HTTP requests for comments nested under `/tickets/:ticketId/comments`.
  *
- * The authenticated user's ID is extracted from the JWT payload
- * (`req.user.userId`) rather than accepted from the request body,
- * preventing author spoofing. State-changing actions are recorded in the
- * audit log.
+ * `POST` accepts `authorId` in the body per the README contract, and verifies
+ * it matches the authenticated user's JWT payload (`req.user.userId`) to
+ * prevent author spoofing. State-changing actions are recorded in the audit log.
  *
  * For `PATCH` and `DELETE`, `ADMIN` may modify any comment; `DEVELOPER`
  * may modify only comments they authored (`authorId` matches JWT `userId`).
@@ -58,7 +58,7 @@ export class CommentController {
 
   /**
    * `POST /tickets/:ticketId/comments` — adds a comment and auto-parses
-   * `@username` mentions. The author is the authenticated user.
+   * `@username` mentions. Body `authorId` must match the authenticated user.
    */
   @Post()
   @HttpCode(HttpStatus.OK)
@@ -68,6 +68,11 @@ export class CommentController {
     @Req() req: Request,
   ): Promise<Comment> {
     const userId = (req.user as { userId: number }).userId;
+    if (dto.authorId !== userId) {
+      throw new BadRequestException(
+        'authorId does not match the authenticated user',
+      );
+    }
     const comment = await this.commentService.create(ticketId, userId, dto);
     await this.auditLogService.log({
       action: AuditAction.CREATE,
@@ -93,12 +98,10 @@ export class CommentController {
     @Req() req: Request,
   ): Promise<void> {
     const jwtUser = req.user as { userId: number; role: Role };
-    await this.commentService.update(
-      ticketId,
-      commentId,
-      dto,
-      { userId: jwtUser.userId, role: jwtUser.role },
-    );
+    await this.commentService.update(ticketId, commentId, dto, {
+      userId: jwtUser.userId,
+      role: jwtUser.role,
+    });
     await this.auditLogService.log({
       action: AuditAction.UPDATE,
       entityType: 'COMMENT',

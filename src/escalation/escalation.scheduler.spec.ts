@@ -73,10 +73,16 @@ describe('EscalationScheduler', () => {
     await scheduler.handleEscalation();
 
     expect(repo.save).toHaveBeenCalledWith([
-      expect.objectContaining({ priority: TicketPriority.MEDIUM, isOverdue: false }),
+      expect.objectContaining({
+        priority: TicketPriority.MEDIUM,
+        isOverdue: false,
+      }),
     ]);
     expect(auditLogService.logMany).toHaveBeenCalledWith([
-      expect.objectContaining({ action: AuditAction.AUTO_ESCALATE, actor: 'SYSTEM' }),
+      expect.objectContaining({
+        action: AuditAction.AUTO_ESCALATE,
+        actor: 'SYSTEM',
+      }),
     ]);
   });
 
@@ -87,7 +93,10 @@ describe('EscalationScheduler', () => {
     await scheduler.handleEscalation();
 
     expect(repo.save).toHaveBeenCalledWith([
-      expect.objectContaining({ priority: TicketPriority.HIGH, isOverdue: false }),
+      expect.objectContaining({
+        priority: TicketPriority.HIGH,
+        isOverdue: false,
+      }),
     ]);
   });
 
@@ -98,23 +107,37 @@ describe('EscalationScheduler', () => {
     await scheduler.handleEscalation();
 
     expect(repo.save).toHaveBeenCalledWith([
-      expect.objectContaining({ priority: TicketPriority.CRITICAL, isOverdue: true }),
+      expect.objectContaining({
+        priority: TicketPriority.CRITICAL,
+        isOverdue: true,
+      }),
     ]);
   });
 
   it('should set isOverdue on CRITICAL that is not yet overdue', async () => {
-    const ticket = { ...baseTicket, priority: TicketPriority.CRITICAL, isOverdue: false };
+    const ticket = {
+      ...baseTicket,
+      priority: TicketPriority.CRITICAL,
+      isOverdue: false,
+    };
     repo.find.mockResolvedValue([ticket]);
 
     await scheduler.handleEscalation();
 
     expect(repo.save).toHaveBeenCalledWith([
-      expect.objectContaining({ priority: TicketPriority.CRITICAL, isOverdue: true }),
+      expect.objectContaining({
+        priority: TicketPriority.CRITICAL,
+        isOverdue: true,
+      }),
     ]);
   });
 
   it('should skip CRITICAL tickets already marked isOverdue', async () => {
-    const ticket = { ...baseTicket, priority: TicketPriority.CRITICAL, isOverdue: true };
+    const ticket = {
+      ...baseTicket,
+      priority: TicketPriority.CRITICAL,
+      isOverdue: true,
+    };
     repo.find.mockResolvedValue([ticket]);
 
     await scheduler.handleEscalation();
@@ -139,20 +162,26 @@ describe('EscalationScheduler', () => {
     await scheduler.handleEscalation();
 
     expect(repo.save).toHaveBeenCalledTimes(1);
-    expect(repo.save).toHaveBeenCalledWith(expect.arrayContaining([
-      expect.objectContaining({ id: 1, priority: TicketPriority.MEDIUM }),
-      expect.objectContaining({ id: 2, priority: TicketPriority.CRITICAL }),
-    ]));
+    expect(repo.save).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 1, priority: TicketPriority.MEDIUM }),
+        expect.objectContaining({ id: 2, priority: TicketPriority.CRITICAL }),
+      ]),
+    );
     expect(auditLogService.logMany).toHaveBeenCalledTimes(1);
-    expect(auditLogService.logMany).toHaveBeenCalledWith(expect.arrayContaining([
-      expect.objectContaining({ entityId: 1 }),
-      expect.objectContaining({ entityId: 2 }),
-    ]));
+    expect(auditLogService.logMany).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ entityId: 1 }),
+        expect.objectContaining({ entityId: 2 }),
+      ]),
+    );
   });
 
   it('should skip overlapping invocations via concurrency guard', async () => {
     let resolveFirst!: () => void;
-    const blockingPromise = new Promise<void>((resolve) => { resolveFirst = resolve; });
+    const blockingPromise = new Promise<void>((resolve) => {
+      resolveFirst = resolve;
+    });
 
     repo.find.mockImplementation(async () => {
       await blockingPromise;

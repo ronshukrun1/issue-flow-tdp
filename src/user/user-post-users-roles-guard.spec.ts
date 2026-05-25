@@ -1,6 +1,9 @@
 import { ForbiddenException, type ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { RolesGuard, ROLES_FORBIDDEN_MESSAGE } from '../auth/guards/roles.guard';
+import {
+  RolesGuard,
+  ROLES_FORBIDDEN_MESSAGE,
+} from '../auth/guards/roles.guard';
 import { UserController } from './user.controller';
 import { Role } from './role.enum';
 
@@ -8,9 +11,7 @@ type AdminOnlyHandler = keyof Pick<UserController, 'create' | 'remove'>;
 
 const ADMIN_ONLY_USER_CONTROLLER_HANDLERS: ReadonlyArray<{
   label: AdminOnlyHandler;
-  handler:
-    | UserController['create']
-    | UserController['remove'];
+  handler: UserController['create'] | UserController['remove'];
 }> = [
   { label: 'create', handler: UserController.prototype.create },
   { label: 'remove', handler: UserController.prototype.remove },
@@ -42,9 +43,9 @@ describe('RolesGuard + ADMIN-only User routes (@Roles ADMIN)', () => {
       });
 
       it('throws ForbiddenException for DEVELOPER', () => {
-        expect(() =>
-          guard.canActivate(mockContext(Role.DEVELOPER)),
-        ).toThrow(new ForbiddenException(ROLES_FORBIDDEN_MESSAGE));
+        expect(() => guard.canActivate(mockContext(Role.DEVELOPER))).toThrow(
+          new ForbiddenException(ROLES_FORBIDDEN_MESSAGE),
+        );
       });
 
       it('throws ForbiddenException without authenticated user payload', () => {

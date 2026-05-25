@@ -73,7 +73,7 @@ export class CommentService {
       where: { ticketId },
       relations: ['mentionLinks', 'mentionLinks.user'],
     });
-    return comments.map((c) => this.hydrateMentionedUsers(this.stripMentionFields(c)));
+    return comments.map((comment) => this.toContractComment(comment));
   }
 
   /**
@@ -125,7 +125,7 @@ export class CommentService {
       where: { id: saved.id },
       relations: ['mentionLinks', 'mentionLinks.user'],
     });
-    return this.hydrateMentionedUsers(this.stripMentionFields(result));
+    return this.toContractComment(result);
   }
 
   /**
@@ -209,7 +209,7 @@ export class CommentService {
       where: { id: commentId },
       relations: ['mentionLinks', 'mentionLinks.user'],
     });
-    return this.hydrateMentionedUsers(this.stripMentionFields(result));
+    return this.toContractComment(result);
   }
 
   /**
@@ -282,9 +282,14 @@ export class CommentService {
 
     const [data, total] = await this.commentRepository
       .createQueryBuilder('comment')
-      .innerJoin('comment.mentionLinks', 'mention', 'mention.usersId = :userId', {
-        userId,
-      })
+      .innerJoin(
+        'comment.mentionLinks',
+        'mention',
+        'mention.usersId = :userId',
+        {
+          userId,
+        },
+      )
       .leftJoinAndSelect('comment.mentionLinks', 'mentionLink')
       .leftJoinAndSelect('mentionLink.user', 'mentionedUser')
       .orderBy('comment.createdAt', 'DESC')
@@ -293,12 +298,15 @@ export class CommentService {
       .getManyAndCount();
 
     return {
-      data: data.map((c) =>
-        this.hydrateMentionedUsers(this.stripMentionFields(c)),
-      ),
+      data: data.map((c) => this.toContractComment(c)),
       total,
       page,
     };
+  }
+
+  /** Hydrates and narrows comment mention data to the README response contract. */
+  private toContractComment(comment: Comment): Comment {
+    return this.stripMentionFields(this.hydrateMentionedUsers(comment));
   }
 
   /** Maps persisted {@link CommentMention} rows onto `mentionedUsers`. */
@@ -316,7 +324,8 @@ export class CommentService {
   private stripMentionFields(comment: Comment): Comment {
     if (comment.mentionedUsers) {
       comment.mentionedUsers = comment.mentionedUsers.map(
-        (u) => ({ id: u.id, username: u.username, fullName: u.fullName }) as User,
+        (u) =>
+          ({ id: u.id, username: u.username, fullName: u.fullName }) as User,
       );
     }
     return comment;

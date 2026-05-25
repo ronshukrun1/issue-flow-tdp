@@ -9,7 +9,8 @@ import {
 
 describe('attachment upload validators (ParseFilePipe + MIME/size)', () => {
   const file = (
-    over: Partial<Express.Multer.File> & Pick<Express.Multer.File, 'mimetype' | 'size'>,
+    over: Partial<Express.Multer.File> &
+      Pick<Express.Multer.File, 'mimetype' | 'size'>,
   ): Express.Multer.File =>
     ({
       fieldname: 'file',
@@ -71,15 +72,15 @@ describe('attachment upload validators (ParseFilePipe + MIME/size)', () => {
     });
 
     it('rejects unsupported types', () => {
-      expect(
-        v.isValid(file({ mimetype: 'application/zip', size: 10 })),
-      ).toBe(false);
+      expect(v.isValid(file({ mimetype: 'application/zip', size: 10 }))).toBe(
+        false,
+      );
     });
 
     it('buildErrorMessage mentions allowed types', () => {
-      expect(v.buildErrorMessage(file({ mimetype: 'image/jpg', size: 1 }))).toContain(
-        'image/png',
-      );
+      expect(
+        v.buildErrorMessage(file({ mimetype: 'image/jpg', size: 1 })),
+      ).toContain('image/png');
     });
   });
 
@@ -94,7 +95,9 @@ describe('attachment upload validators (ParseFilePipe + MIME/size)', () => {
 
     it('rejects over 10 MiB', () => {
       expect(
-        v.isValid(file({ mimetype: 'image/png', size: MAX_ATTACHMENT_BYTES + 1 })),
+        v.isValid(
+          file({ mimetype: 'image/png', size: MAX_ATTACHMENT_BYTES + 1 }),
+        ),
       ).toBe(false);
     });
 

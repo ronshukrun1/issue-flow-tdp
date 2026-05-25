@@ -1,8 +1,4 @@
-import {
-  Controller,
-  Get,
-  Query,
-} from '@nestjs/common';
+import { BadRequestException, Controller, Get, Query } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { AuditLogService } from './audit-log.service';
 import { AuditLog } from './audit-log.entity';
@@ -29,12 +25,29 @@ export class AuditLogController {
     @Query('action') action?: string,
     @Query('actor') actor?: string,
   ): Promise<AuditLog[]> {
-    const parsedId = entityId !== undefined ? parseInt(entityId, 10) : undefined;
+    const parsedId = this.parseOptionalEntityId(entityId);
     return this.auditLogService.findAll({
       entityType,
-      entityId: parsedId !== undefined && !isNaN(parsedId) ? parsedId : undefined,
+      entityId: parsedId,
       action,
       actor,
     });
+  }
+
+  private parseOptionalEntityId(entityId?: string): number | undefined {
+    if (entityId === undefined) {
+      return undefined;
+    }
+
+    if (!/^\d+$/.test(entityId)) {
+      throw new BadRequestException('entityId must be a positive integer');
+    }
+
+    const parsed = Number(entityId);
+    if (!Number.isSafeInteger(parsed) || parsed < 1) {
+      throw new BadRequestException('entityId must be a positive integer');
+    }
+
+    return parsed;
   }
 }

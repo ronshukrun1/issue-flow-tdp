@@ -94,18 +94,14 @@ describe('AuthService', () => {
     it('should throw UnauthorizedException when user not found', async () => {
       userService.findByUsernameWithPassword.mockResolvedValue(null);
 
-      await expect(service.login(dto)).rejects.toThrow(
-        UnauthorizedException,
-      );
+      await expect(service.login(dto)).rejects.toThrow(UnauthorizedException);
     });
 
     it('should throw UnauthorizedException for wrong password', async () => {
       userService.findByUsernameWithPassword.mockResolvedValue(mockUser);
       (bcrypt.compare as jest.Mock).mockResolvedValue(false);
 
-      await expect(service.login(dto)).rejects.toThrow(
-        UnauthorizedException,
-      );
+      await expect(service.login(dto)).rejects.toThrow(UnauthorizedException);
     });
   });
 
@@ -127,7 +123,8 @@ describe('AuthService', () => {
 
   describe('getProfile', () => {
     it('should return the user profile for a valid userId', async () => {
-      const { password: _, ...profile } = mockUser;
+      const profile = { ...mockUser };
+      delete (profile as Partial<User>).password;
       userService.findOne.mockResolvedValue(profile as User);
 
       const result = await service.getProfile(1);
@@ -140,9 +137,7 @@ describe('AuthService', () => {
         new NotFoundException('User with ID 999 not found'),
       );
 
-      await expect(service.getProfile(999)).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(service.getProfile(999)).rejects.toThrow(NotFoundException);
     });
   });
 });

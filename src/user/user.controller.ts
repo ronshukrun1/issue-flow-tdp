@@ -83,10 +83,7 @@ export class UserController {
   @Roles(Role.ADMIN)
   @Post()
   @HttpCode(HttpStatus.OK)
-  async create(
-    @Body() dto: CreateUserDto,
-    @Req() req: Request,
-  ): Promise<User> {
+  async create(@Body() dto: CreateUserDto, @Req() req: Request): Promise<User> {
     const user = await this.userService.create(dto);
     await this.auditLogService.log({
       action: AuditAction.CREATE,
@@ -123,12 +120,7 @@ export class UserController {
       body !== null &&
       Object.prototype.hasOwnProperty.call(body, 'role');
 
-    await this.userService.update(
-      userId,
-      dto,
-      actor,
-      requestBodyIncludesRole,
-    );
+    await this.userService.update(userId, dto, actor, requestBodyIncludesRole);
     await this.auditLogService.log({
       action: AuditAction.UPDATE,
       entityType: 'USER',

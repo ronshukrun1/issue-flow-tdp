@@ -8,7 +8,9 @@ import { Transform } from 'class-transformer';
  */
 export class UpdateCommentDto {
   /** Updated comment body (1-5000 characters). May contain `@username` mentions. */
-  @Transform(({ value }: { value: string }) => value?.trim())
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @IsNotEmpty()
   @MinLength(1)

@@ -18,7 +18,7 @@ import { UserService } from '../user/user.service';
 import { TicketService } from '../ticket/ticket.service';
 import { CommentService } from '../comment/comment.service';
 import { ProjectService } from '../project/project.service';
-import { AuditLogService, AuditLogEntry } from '../audit-log/audit-log.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 import { AuditAction } from '../audit-log/enums/audit-action.enum';
 import { User } from '../user/user.entity';
 import { Ticket } from '../ticket/ticket.entity';
@@ -86,6 +86,7 @@ describe('IssueFlow Full-Flow Integration', () => {
     };
 
     const userQb = {
+      innerJoin: jest.fn().mockReturnThis(),
       leftJoin: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       select: jest.fn().mockReturnThis(),
@@ -95,14 +96,18 @@ describe('IssueFlow Full-Flow Integration', () => {
       orderBy: jest.fn().mockReturnThis(),
       addOrderBy: jest.fn().mockReturnThis(),
       limit: jest.fn().mockReturnThis(),
-      getRawOne: jest.fn().mockResolvedValue({ userId: devUser.id, openTicketCount: '0' }),
+      getRawOne: jest
+        .fn()
+        .mockResolvedValue({ userId: devUser.id, openTicketCount: '0' }),
       getRawMany: jest.fn().mockResolvedValue([]),
     };
 
     const userRepoQb = {
       addSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
-      getOne: jest.fn().mockResolvedValue({ ...adminUser, password: '$2b$10$hashed' }),
+      getOne: jest
+        .fn()
+        .mockResolvedValue({ ...adminUser, password: '$2b$10$hashed' }),
       getMany: jest.fn().mockResolvedValue([devUser]),
     };
 
@@ -130,6 +135,21 @@ describe('IssueFlow Full-Flow Integration', () => {
 
     const dataSourceStub = {
       createQueryRunner: jest.fn().mockReturnValue(queryRunnerStub),
+      transaction: jest.fn().mockImplementation(async (cb) =>
+        cb({
+          create: jest.fn().mockImplementation((_entity, data) => ({
+            id: ++autoId,
+            ...data,
+            timestamp: now,
+          })),
+          save: jest.fn().mockImplementation(async (entity, value) => {
+            if (entity === AuditLog) {
+              auditStore.push(value);
+            }
+            return value;
+          }),
+        }),
+      ),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -161,21 +181,27 @@ describe('IssueFlow Full-Flow Integration', () => {
           provide: getRepositoryToken(User),
           useValue: {
             find: jest.fn().mockResolvedValue([devUser, adminUser]),
-            findOneBy: jest.fn().mockImplementation(({ id }: { id: number }) => {
-              if (id === devUser.id) return Promise.resolve(devUser);
-              if (id === adminUser.id) return Promise.resolve(adminUser);
-              return Promise.resolve(null);
-            }),
-            createQueryBuilder: jest.fn().mockImplementation((alias?: string) => {
-              if (alias === 'user') {
-                return {
-                  ...userRepoQb,
-                  ...userQb,
-                };
-              }
-              return userRepoQb;
-            }),
-            create: jest.fn().mockImplementation((data) => ({ ...data, id: ++autoId })),
+            findOneBy: jest
+              .fn()
+              .mockImplementation(({ id }: { id: number }) => {
+                if (id === devUser.id) return Promise.resolve(devUser);
+                if (id === adminUser.id) return Promise.resolve(adminUser);
+                return Promise.resolve(null);
+              }),
+            createQueryBuilder: jest
+              .fn()
+              .mockImplementation((alias?: string) => {
+                if (alias === 'user') {
+                  return {
+                    ...userRepoQb,
+                    ...userQb,
+                  };
+                }
+                return userRepoQb;
+              }),
+            create: jest
+              .fn()
+              .mockImplementation((data) => ({ ...data, id: ++autoId })),
             save: jest.fn().mockImplementation(async (entity) => entity),
             delete: jest.fn().mockResolvedValue({ affected: 1 }),
           },
@@ -184,9 +210,35 @@ describe('IssueFlow Full-Flow Integration', () => {
           provide: getRepositoryToken(Ticket),
           useValue: {
             find: jest.fn().mockResolvedValue([]),
-            findOne: jest.fn().mockImplementation(async ({ where }: { where: { id: number } }) => {
-              return {
-                id: where.id,
+            findOne: jest
+              .fn()
+              .mockImplementation(
+                async ({ where }: { where: { id: number } }) => {
+                  return {
+                    id: where.id,
+                    title: 'Test Ticket',
+                    description: 'Desc',
+                    status: TicketStatus.TODO,
+                    priority: TicketPriority.HIGH,
+                    type: TicketType.BUG,
+                    projectId: 1,
+                    project: undefined as never,
+                    assigneeId: null,
+                    assignee: null,
+                    dueDate: null,
+                    isOverdue: false,
+                    blockedBy: [],
+                    version: 1,
+                    createdAt: now,
+                    updatedAt: now,
+                    deletedAt: null,
+                  } as Ticket;
+                },
+              ),
+            findOneBy: jest
+              .fn()
+              .mockImplementation(async ({ id }: { id: number }) => ({
+                id,
                 title: 'Test Ticket',
                 description: 'Desc',
                 status: TicketStatus.TODO,
@@ -203,27 +255,7 @@ describe('IssueFlow Full-Flow Integration', () => {
                 createdAt: now,
                 updatedAt: now,
                 deletedAt: null,
-              } as Ticket;
-            }),
-            findOneBy: jest.fn().mockImplementation(async ({ id }: { id: number }) => ({
-              id,
-              title: 'Test Ticket',
-              description: 'Desc',
-              status: TicketStatus.TODO,
-              priority: TicketPriority.HIGH,
-              type: TicketType.BUG,
-              projectId: 1,
-              project: undefined as never,
-              assigneeId: null,
-              assignee: null,
-              dueDate: null,
-              isOverdue: false,
-              blockedBy: [],
-              version: 1,
-              createdAt: now,
-              updatedAt: now,
-              deletedAt: null,
-            })),
+              })),
             create: jest.fn().mockImplementation((data) => ({
               id: ++autoId,
               ...data,
@@ -237,7 +269,10 @@ describe('IssueFlow Full-Flow Integration', () => {
               deletedAt: null,
             })),
             save: jest.fn().mockImplementation(async (entity) => entity),
-            softRemove: jest.fn().mockImplementation(async (entity) => ({ ...entity, deletedAt: now })),
+            softRemove: jest.fn().mockImplementation(async (entity) => ({
+              ...entity,
+              deletedAt: now,
+            })),
             restore: jest.fn().mockResolvedValue({ affected: 1 }),
             createQueryBuilder: jest.fn().mockReturnValue(ticketQb),
           },
@@ -247,17 +282,27 @@ describe('IssueFlow Full-Flow Integration', () => {
           useValue: {
             find: jest.fn().mockResolvedValue([]),
             findOne: jest.fn().mockResolvedValue(null),
-            findOneOrFail: jest.fn().mockImplementation(async ({ where }: { where: { id: number } }) => ({
-              id: where.id,
-              ticketId: 1,
-              authorId: adminUser.id,
-              content: 'Great work @alice!',
-              mentionLinks: [{ commentsId: where.id, usersId: devUser.id, user: devUser }],
-              mentionedUsers: [devUser],
-              version: 1,
-              createdAt: now,
-              updatedAt: now,
-            })),
+            findOneOrFail: jest
+              .fn()
+              .mockImplementation(
+                async ({ where }: { where: { id: number } }) => ({
+                  id: where.id,
+                  ticketId: 1,
+                  authorId: adminUser.id,
+                  content: 'Great work @alice!',
+                  mentionLinks: [
+                    {
+                      commentsId: where.id,
+                      usersId: devUser.id,
+                      user: devUser,
+                    },
+                  ],
+                  mentionedUsers: [devUser],
+                  version: 1,
+                  createdAt: now,
+                  updatedAt: now,
+                }),
+              ),
             create: jest.fn().mockImplementation((data) => ({
               id: ++autoId,
               ...data,
@@ -289,7 +334,9 @@ describe('IssueFlow Full-Flow Integration', () => {
             createQueryBuilder: jest.fn().mockReturnValue({
               andWhere: jest.fn().mockReturnThis(),
               orderBy: jest.fn().mockReturnThis(),
-              getMany: jest.fn().mockImplementation(async () => [...auditStore]),
+              getMany: jest
+                .fn()
+                .mockImplementation(async () => [...auditStore]),
             }),
           },
         },
@@ -374,11 +421,10 @@ describe('IssueFlow Full-Flow Integration', () => {
 
   describe('Step 3: Comment with @Mention', () => {
     it('should create a comment and resolve @username mentions', async () => {
-      const comment = await commentService.create(
-        101,
-        adminUser.id,
-        { content: 'Great work @alice!' },
-      );
+      const comment = await commentService.create(101, adminUser.id, {
+        authorId: adminUser.id,
+        content: 'Great work @alice!',
+      });
 
       expect(comment).toBeDefined();
       expect(comment.content).toBe('Great work @alice!');

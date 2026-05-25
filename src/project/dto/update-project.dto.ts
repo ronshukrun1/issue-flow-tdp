@@ -10,7 +10,9 @@ import { Transform } from 'class-transformer';
 export class UpdateProjectDto {
   /** Updated project name (1–150 characters, trimmed). */
   @IsOptional()
-  @Transform(({ value }: { value: string }) => value?.trim())
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @MinLength(1)
   @MaxLength(150)
@@ -18,7 +20,9 @@ export class UpdateProjectDto {
 
   /** Updated project description (max 2000 characters, trimmed). */
   @IsOptional()
-  @Transform(({ value }: { value: string }) => value?.trim())
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @MaxLength(2000)
   description?: string;

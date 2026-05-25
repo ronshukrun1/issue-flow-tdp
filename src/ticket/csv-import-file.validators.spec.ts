@@ -1,4 +1,7 @@
-import { MaxTicketCsvSizeValidator, CsvOriginalNameValidator } from './csv-import-file.validators';
+import {
+  MaxTicketCsvSizeValidator,
+  CsvOriginalNameValidator,
+} from './csv-import-file.validators';
 
 describe('Ticket CSV upload file validators', () => {
   const baseFile = (): Express.Multer.File =>

@@ -19,7 +19,9 @@ import { Role } from '../role.enum';
  */
 export class CreateUserDto {
   /** Unique login handle for the user (2-50 characters, trimmed). */
-  @Transform(({ value }: { value: string }) => value?.trim())
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @IsNotEmpty()
   @MinLength(2)
@@ -27,14 +29,18 @@ export class CreateUserDto {
   username!: string;
 
   /** Unique contact email address (lowercased, max 255 characters). */
-  @Transform(({ value }: { value: string }) => value?.trim().toLowerCase())
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
   @IsEmail()
   @IsNotEmpty()
   @MaxLength(255)
   email!: string;
 
   /** Human-readable full name (1-100 characters, trimmed). */
-  @Transform(({ value }: { value: string }) => value?.trim())
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @IsNotEmpty()
   @MinLength(1)

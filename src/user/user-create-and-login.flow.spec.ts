@@ -32,7 +32,9 @@ describe('UserService.create → AuthService.login password flow', () => {
     findOneBy: jest.fn(),
     findOneByOrFail: jest.fn(),
     count: jest.fn(),
-    create: jest.fn((data: Partial<User>) => ({ id: 99, ...(data as object) }) as User),
+    create: jest.fn(
+      (data: Partial<User>) => ({ id: 99, ...(data as object) }) as User,
+    ),
     save: jest.fn(async (entity: User) => {
       savedEntity = entity;
       return entity;
@@ -71,7 +73,8 @@ describe('UserService.create → AuthService.login password flow', () => {
 
     repository.findOneByOrFail.mockImplementation(
       async ({ id }: { id: number }) => {
-        const { password: _ignored, ...rest } = savedEntity;
+        const rest = { ...savedEntity };
+        delete (rest as Partial<User>).password;
         return {
           ...(rest as User),
           id,

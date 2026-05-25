@@ -22,7 +22,9 @@ import { TicketPriority } from '../enums/ticket-priority.enum';
 export class UpdateTicketDto {
   /** Updated title (1-255 characters, trimmed). */
   @IsOptional()
-  @Transform(({ value }: { value: string }) => value?.trim())
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @MinLength(1)
   @MaxLength(255)
@@ -30,7 +32,9 @@ export class UpdateTicketDto {
 
   /** Updated description (1-5000 characters, trimmed). */
   @IsOptional()
-  @Transform(({ value }: { value: string }) => value?.trim())
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @MinLength(1)
   @MaxLength(5000)
@@ -54,12 +58,16 @@ export class UpdateTicketDto {
 
   /** Updated assignee user ID. */
   @IsOptional()
-  @IsInt()
-  assigneeId?: number;
+  @ValidateIf((o) => o.assigneeId !== null)
+  @IsInt({ message: 'assigneeId must be an integer' })
+  assigneeId?: number | null;
 
   /** Updated due date in ISO-8601 format. Send `null` to clear. */
   @IsOptional()
   @ValidateIf((o) => o.dueDate !== null)
-  @IsDateString()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsDateString({}, { message: 'dueDate must be a valid ISO-8601 date string' })
   dueDate?: string | null;
 }

@@ -11,12 +11,14 @@ import {
   BadRequestException,
   ConflictException,
 } from '@nestjs/common';
+import { instanceToPlain } from 'class-transformer';
 import { TicketService, MAX_TICKET_CSV_IMPORT_ROWS } from './ticket.service';
 import { Ticket } from './ticket.entity';
 import { User } from '../user/user.entity';
 import { ProjectService } from '../project/project.service';
 import { UserService } from '../user/user.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { AuditLog } from '../audit-log/audit-log.entity';
 import { AuditAction } from '../audit-log/enums/audit-action.enum';
 import { TicketStatus } from './enums/ticket-status.enum';
 import { TicketPriority } from './enums/ticket-priority.enum';
@@ -24,8 +26,49 @@ import { TicketType } from './enums/ticket-type.enum';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
 import { PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE } from '../common/pg-nowait-row-lock';
+import { Role } from '../user/role.enum';
 
 const now = new Date();
+
+/** Must match {@link TicketService} open-ticket JOIN used by workload and auto-assignment. */
+const OPEN_TICKET_JOIN_CONDITION =
+  'ticket."assigneeId" = user.id AND ticket."projectId" = :projectId AND ticket.status != :done AND ticket."deletedAt" IS NULL';
+const PROJECT_ASSIGNEE_TICKET_ALIAS = 'project_ticket';
+const PROJECT_ASSIGNEE_JOIN_CONDITION = `${PROJECT_ASSIGNEE_TICKET_ALIAS}."assigneeId" = user.id AND ${PROJECT_ASSIGNEE_TICKET_ALIAS}."projectId" = :projectId AND ${PROJECT_ASSIGNEE_TICKET_ALIAS}."assigneeId" IS NOT NULL AND ${PROJECT_ASSIGNEE_TICKET_ALIAS}."deletedAt" IS NULL`;
+const OPEN_TICKET_COUNT_SQL = 'COUNT(DISTINCT ticket.id)';
+
+type UserQbMock = {
+  innerJoin: jest.Mock;
+  leftJoin: jest.Mock;
+  where: jest.Mock;
+  groupBy: jest.Mock;
+  addGroupBy: jest.Mock;
+  orderBy: jest.Mock;
+  addOrderBy: jest.Mock;
+};
+
+const expectDeveloperWorkloadBaseQuery = (
+  qb: UserQbMock,
+  projectId: number,
+) => {
+  expect(qb.innerJoin).toHaveBeenCalledWith(
+    'tickets',
+    PROJECT_ASSIGNEE_TICKET_ALIAS,
+    PROJECT_ASSIGNEE_JOIN_CONDITION,
+    { projectId },
+  );
+  expect(qb.leftJoin).toHaveBeenCalledWith(
+    'tickets',
+    'ticket',
+    OPEN_TICKET_JOIN_CONDITION,
+    { projectId, done: TicketStatus.DONE },
+  );
+  expect(qb.where).toHaveBeenCalledWith('user.role = :role', {
+    role: Role.DEVELOPER,
+  });
+  expect(qb.groupBy).toHaveBeenCalledWith('user.id');
+  expect(qb.addGroupBy).toHaveBeenCalledWith('user.createdAt');
+};
 
 const mockTicket: Ticket = {
   id: 1,
@@ -57,11 +100,14 @@ describe('TicketService', () => {
   let txnTicketManager: {
     findOne: jest.Mock;
     save: jest.Mock;
+    create: jest.Mock;
     createQueryBuilder: jest.Mock;
   };
+  let dataSource: { createQueryRunner: jest.Mock; transaction: jest.Mock };
 
   const mockUserRepoQb = () => {
     const qb = {
+      innerJoin: jest.fn().mockReturnThis(),
       leftJoin: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       select: jest.fn().mockReturnThis(),
@@ -82,6 +128,7 @@ describe('TicketService', () => {
     txnTicketManager = {
       findOne: jest.fn(),
       save: jest.fn(),
+      create: jest.fn(),
       createQueryBuilder: jest.fn(),
     };
     const queryRunnerStub = {
@@ -94,7 +141,12 @@ describe('TicketService', () => {
     };
     const dataSourceStub = {
       createQueryRunner: jest.fn().mockReturnValue(queryRunnerStub),
+      transaction: jest.fn(
+        async (cb: (manager: typeof txnTicketManager) => Promise<unknown>) =>
+          cb(txnTicketManager),
+      ),
     };
+    dataSource = dataSourceStub;
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -149,6 +201,24 @@ describe('TicketService', () => {
     expect(service).toBeDefined();
   });
 
+  it('should include isOverdue in serialized responses when false or true', () => {
+    const inactive = Object.assign(new Ticket(), {
+      ...mockTicket,
+      isOverdue: false,
+    });
+    const overdue = Object.assign(new Ticket(), {
+      ...mockTicket,
+      isOverdue: true,
+    });
+
+    expect(JSON.stringify(instanceToPlain(inactive))).toContain(
+      '"isOverdue":false',
+    );
+    expect(JSON.stringify(instanceToPlain(overdue))).toContain(
+      '"isOverdue":true',
+    );
+  });
+
   // ---------- findByProject ----------
 
   describe('findByProject', () => {
@@ -163,7 +233,9 @@ describe('TicketService', () => {
 
     it('should propagate NotFoundException when the project does not exist', async () => {
       projectService.findOne.mockRejectedValue(new NotFoundException());
-      await expect(service.findByProject(999)).rejects.toThrow(NotFoundException);
+      await expect(service.findByProject(999)).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it('should propagate NotFoundException when the project is soft-deleted', async () => {
@@ -217,17 +289,42 @@ describe('TicketService', () => {
     it('should auto-assign when assigneeId is null', async () => {
       projectService.findOne.mockResolvedValue({} as never);
       repo.create.mockReturnValue({ ...mockTicket });
-      repo.save
-        .mockResolvedValueOnce({ ...mockTicket })
-        .mockResolvedValueOnce({ ...mockTicket, assigneeId: 7 });
+      repo.save.mockResolvedValueOnce({ ...mockTicket });
+      txnTicketManager.save.mockImplementation(async (_entity, value) => value);
+      txnTicketManager.create.mockReturnValue({
+        action: AuditAction.AUTO_ASSIGN,
+        actor: 'SYSTEM',
+        performedBy: null,
+      });
 
       const qb = mockUserRepoQb();
       qb.getRawOne.mockResolvedValue({ userId: 7, openTicketCount: '0' });
 
       const result = await service.create(dto);
       expect(result.assigneeId).toBe(7);
-      expect(auditLogService.log).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'AUTO_ASSIGN', actor: 'SYSTEM' }),
+      expect(dataSource.transaction).toHaveBeenCalled();
+      expect(txnTicketManager.save).toHaveBeenCalledWith(
+        AuditLog,
+        expect.objectContaining({
+          action: AuditAction.AUTO_ASSIGN,
+          actor: 'SYSTEM',
+          performedBy: null,
+        }),
+      );
+    });
+
+    it('should not auto-assign when assigneeId is provided', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      userService.findOne.mockResolvedValue({} as never);
+      const assigned = { ...mockTicket, assigneeId: 5 };
+      repo.create.mockReturnValue(assigned);
+      repo.save.mockResolvedValue(assigned);
+
+      await service.create({ ...dto, assigneeId: 5 });
+
+      expect(userRepo.createQueryBuilder).not.toHaveBeenCalled();
+      expect(auditLogService.log).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: AuditAction.AUTO_ASSIGN }),
       );
     });
 
@@ -242,17 +339,25 @@ describe('TicketService', () => {
 
       const result = await service.create(dto);
       expect(result.assigneeId).toBeNull();
+      expect(txnTicketManager.save).not.toHaveBeenCalledWith(
+        AuditLog,
+        expect.anything(),
+      );
     });
 
     it('should throw BadRequestException when project does not exist', async () => {
       projectService.findOne.mockRejectedValue(new NotFoundException());
-      await expect(service.create({ ...dto, projectId: 999 })).rejects.toThrow(BadRequestException);
+      await expect(service.create({ ...dto, projectId: 999 })).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('should throw BadRequestException when assignee does not exist', async () => {
       projectService.findOne.mockResolvedValue({} as never);
       userService.findOne.mockRejectedValue(new NotFoundException());
-      await expect(service.create({ ...dto, assigneeId: 999 })).rejects.toThrow(BadRequestException);
+      await expect(service.create({ ...dto, assigneeId: 999 })).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('should re-throw unexpected errors from project lookup', async () => {
@@ -278,13 +383,23 @@ describe('TicketService', () => {
     });
 
     it('should reject updates on a DONE ticket', async () => {
-      txnTicketManager.findOne.mockResolvedValue({ ...mockTicket, status: TicketStatus.DONE });
-      await expect(service.update(1, { title: 'Change' })).rejects.toThrow(BadRequestException);
+      txnTicketManager.findOne.mockResolvedValue({
+        ...mockTicket,
+        status: TicketStatus.DONE,
+      });
+      await expect(service.update(1, { title: 'Change' })).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('should reject backward status transitions', async () => {
-      txnTicketManager.findOne.mockResolvedValue({ ...mockTicket, status: TicketStatus.IN_PROGRESS });
-      await expect(service.update(1, { status: TicketStatus.TODO })).rejects.toThrow(BadRequestException);
+      txnTicketManager.findOne.mockResolvedValue({
+        ...mockTicket,
+        status: TicketStatus.IN_PROGRESS,
+      });
+      await expect(
+        service.update(1, { status: TicketStatus.TODO }),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('should allow forward status transitions', async () => {
@@ -293,13 +408,20 @@ describe('TicketService', () => {
       txnTicketManager.findOne.mockResolvedValue(ticket);
       txnTicketManager.save.mockResolvedValue(updated);
 
-      const result = await service.update(1, { status: TicketStatus.IN_PROGRESS });
+      const result = await service.update(1, {
+        status: TicketStatus.IN_PROGRESS,
+      });
       expect(result.status).toBe(TicketStatus.IN_PROGRESS);
     });
 
     it('should reject same-status transitions', async () => {
-      txnTicketManager.findOne.mockResolvedValue({ ...mockTicket, status: TicketStatus.IN_REVIEW });
-      await expect(service.update(1, { status: TicketStatus.IN_REVIEW })).rejects.toThrow(BadRequestException);
+      txnTicketManager.findOne.mockResolvedValue({
+        ...mockTicket,
+        status: TicketStatus.IN_REVIEW,
+      });
+      await expect(
+        service.update(1, { status: TicketStatus.IN_REVIEW }),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('should handle partial updates (no status change)', async () => {
@@ -307,13 +429,17 @@ describe('TicketService', () => {
       txnTicketManager.findOne.mockResolvedValue({ ...mockTicket });
       txnTicketManager.save.mockResolvedValue(updated);
 
-      const result = await service.update(1, { priority: TicketPriority.CRITICAL });
+      const result = await service.update(1, {
+        priority: TicketPriority.CRITICAL,
+      });
       expect(result.priority).toBe(TicketPriority.CRITICAL);
     });
 
     it('should throw NotFoundException when ticket does not exist', async () => {
       txnTicketManager.findOne.mockResolvedValue(null);
-      await expect(service.update(999, { title: 'X' } as UpdateTicketDto)).rejects.toThrow(NotFoundException);
+      await expect(
+        service.update(999, { title: 'X' } as UpdateTicketDto),
+      ).rejects.toThrow(NotFoundException);
     });
 
     it('should reject DONE transition when unresolved blockers exist', async () => {
@@ -327,7 +453,9 @@ describe('TicketService', () => {
       };
       txnTicketManager.createQueryBuilder.mockReturnValue(qb as never);
 
-      await expect(service.update(1, { status: TicketStatus.DONE })).rejects.toThrow(BadRequestException);
+      await expect(
+        service.update(1, { status: TicketStatus.DONE }),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('should allow DONE transition when all blockers are DONE', async () => {
@@ -340,20 +468,45 @@ describe('TicketService', () => {
         getCount: jest.fn().mockResolvedValue(0),
       };
       txnTicketManager.createQueryBuilder.mockReturnValue(qb as never);
-      txnTicketManager.save.mockResolvedValue({ ...inReview, status: TicketStatus.DONE });
+      txnTicketManager.save.mockResolvedValue({
+        ...inReview,
+        status: TicketStatus.DONE,
+      });
 
       const result = await service.update(1, { status: TicketStatus.DONE });
       expect(result.status).toBe(TicketStatus.DONE);
     });
 
     it('should reset isOverdue when priority is set manually', async () => {
-      const overdue = { ...mockTicket, isOverdue: true, priority: TicketPriority.CRITICAL };
+      const overdue = {
+        ...mockTicket,
+        isOverdue: true,
+        priority: TicketPriority.CRITICAL,
+      };
       txnTicketManager.findOne.mockResolvedValue({ ...overdue });
       txnTicketManager.save.mockImplementation(async (Entity, t: Ticket) => t);
 
       const result = await service.update(1, { priority: TicketPriority.LOW });
       expect(result.isOverdue).toBe(false);
       expect(result.priority).toBe(TicketPriority.LOW);
+    });
+
+    it('should reset isOverdue when dueDate is manually moved to the future without changing status', async () => {
+      const future = new Date(Date.now() + 60_000).toISOString();
+      const overdue = {
+        ...mockTicket,
+        status: TicketStatus.IN_PROGRESS,
+        isOverdue: true,
+        dueDate: new Date('2020-01-01T00:00:00.000Z'),
+      };
+      txnTicketManager.findOne.mockResolvedValue({ ...overdue });
+      txnTicketManager.save.mockImplementation(async (_entity, t: Ticket) => t);
+
+      const result = await service.update(1, { dueDate: future });
+
+      expect(result.isOverdue).toBe(false);
+      expect(result.status).toBe(TicketStatus.IN_PROGRESS);
+      expect(result.dueDate?.toISOString()).toBe(future);
     });
 
     it('should throw ConflictException on optimistic lock version mismatch', async () => {
@@ -380,6 +533,16 @@ describe('TicketService', () => {
       await expect(service.update(1, { title: 'X' })).rejects.toThrow(
         PG_NOWAIT_ROW_LOCK_GENERIC_MESSAGE,
       );
+    });
+
+    it('should not trigger auto-assignment on update', async () => {
+      const updated = { ...mockTicket, title: 'New title' };
+      txnTicketManager.findOne.mockResolvedValue({ ...mockTicket });
+      txnTicketManager.save.mockResolvedValue(updated);
+
+      await service.update(1, { title: 'New title' });
+
+      expect(userRepo.createQueryBuilder).not.toHaveBeenCalled();
     });
   });
 
@@ -420,37 +583,173 @@ describe('TicketService', () => {
 
   describe('restore', () => {
     it('should restore a soft-deleted ticket', async () => {
-      repo.restore.mockResolvedValue({ affected: 1, raw: [], generatedMaps: [] });
+      repo.findOne.mockResolvedValue({ ...mockTicket, deletedAt: now });
+      projectService.findOne.mockResolvedValue({} as never);
+      repo.restore.mockResolvedValue({
+        affected: 1,
+        raw: [],
+        generatedMaps: [],
+      });
       await expect(service.restore(1)).resolves.toBeUndefined();
+      expect(repo.findOne).toHaveBeenCalledWith({
+        where: { id: 1 },
+        withDeleted: true,
+      });
+      expect(projectService.findOne).toHaveBeenCalledWith(mockTicket.projectId);
     });
 
     it('should throw NotFoundException when no soft-deleted ticket found', async () => {
-      repo.restore.mockResolvedValue({ affected: 0, raw: [], generatedMaps: [] });
+      repo.findOne.mockResolvedValue(null);
       await expect(service.restore(999)).rejects.toThrow(NotFoundException);
+    });
+
+    it('should block restore when the parent project is missing or soft-deleted', async () => {
+      repo.findOne.mockResolvedValue({ ...mockTicket, deletedAt: now });
+      projectService.findOne.mockRejectedValue(
+        new NotFoundException('Project with ID 1 not found'),
+      );
+
+      await expect(service.restore(1)).rejects.toThrow(BadRequestException);
+      await expect(service.restore(1)).rejects.toThrow(
+        'Cannot restore ticket 1 because parent project 1 does not exist or is soft-deleted',
+      );
+      expect(repo.restore).not.toHaveBeenCalled();
     });
   });
 
   // ---------- getProjectWorkload ----------
 
   describe('getProjectWorkload', () => {
-    it('should return workload data sorted by openTicketCount', async () => {
+    it('should return workload data with numeric openTicketCount', async () => {
       projectService.findOne.mockResolvedValue({} as never);
       const qb = mockUserRepoQb();
       qb.getRawMany.mockResolvedValue([
         { userId: 1, username: 'alice', openTicketCount: '2' },
-        { userId: 2, username: 'bob', openTicketCount: '5' },
+        { userId: 2, username: 'bob', openTicketCount: '0' },
       ]);
 
       const result = await service.getProjectWorkload(1);
       expect(result).toEqual([
         { userId: 1, username: 'alice', openTicketCount: 2 },
-        { userId: 2, username: 'bob', openTicketCount: 5 },
+        { userId: 2, username: 'bob', openTicketCount: 0 },
       ]);
+      expect(typeof result[0].openTicketCount).toBe('number');
+      expect(typeof result[1].openTicketCount).toBe('number');
+    });
+
+    it('should query only project-linked DEVELOPER users via LEFT JOIN (includes zero workload)', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      const qb = mockUserRepoQb();
+      qb.getRawMany.mockResolvedValue([]);
+
+      await service.getProjectWorkload(42);
+
+      expectDeveloperWorkloadBaseQuery(qb, 42);
+      expect(qb.leftJoin).toHaveBeenCalled();
+      expect(qb.orderBy).toHaveBeenCalledWith(OPEN_TICKET_COUNT_SQL, 'ASC');
+      expect(qb.addOrderBy).toHaveBeenCalledWith('user.createdAt', 'ASC');
+    });
+
+    it('should exclude DONE, soft-deleted, other-project, and unassigned tickets from the join', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      const qb = mockUserRepoQb();
+      qb.getRawMany.mockResolvedValue([]);
+
+      await service.getProjectWorkload(1);
+
+      expect(qb.leftJoin.mock.calls[0][2]).toContain('assigneeId');
+      expect(qb.leftJoin.mock.calls[0][2]).toContain('projectId');
+      expect(qb.leftJoin.mock.calls[0][2]).toContain('status !=');
+      expect(qb.leftJoin.mock.calls[0][2]).toContain('deletedAt" IS NULL');
+      expect(qb.innerJoin.mock.calls[0][2]).toContain(
+        PROJECT_ASSIGNEE_TICKET_ALIAS,
+      );
+      expect(qb.innerJoin.mock.calls[0][2]).toContain(
+        'assigneeId" IS NOT NULL',
+      );
     });
 
     it('should throw NotFoundException when the project does not exist', async () => {
-      projectService.findOne.mockRejectedValue(new NotFoundException());
-      await expect(service.getProjectWorkload(999)).rejects.toThrow(NotFoundException);
+      projectService.findOne.mockRejectedValue(
+        new NotFoundException('Project with ID 999 not found'),
+      );
+      await expect(service.getProjectWorkload(999)).rejects.toThrow(
+        NotFoundException,
+      );
+      await expect(service.getProjectWorkload(999)).rejects.toThrow(
+        'Project with ID 999 not found',
+      );
+    });
+
+    it('should throw NotFoundException when the project is soft-deleted', async () => {
+      projectService.findOne.mockRejectedValue(
+        new NotFoundException('Project with ID 1 not found'),
+      );
+      await expect(service.getProjectWorkload(1)).rejects.toThrow(
+        'Project with ID 1 not found',
+      );
+    });
+  });
+
+  // ---------- auto-assignment query contract (shared with workload) ----------
+
+  describe('auto-assignment workload query', () => {
+    const dto: CreateTicketDto = {
+      title: 'New ticket',
+      description: 'Desc',
+      status: TicketStatus.TODO,
+      priority: TicketPriority.HIGH,
+      type: TicketType.BUG,
+      projectId: 5,
+    };
+
+    it('should select the least-loaded DEVELOPER with oldest-registration tie-breaker', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      repo.create.mockReturnValue({ ...mockTicket, projectId: 5 });
+      repo.save.mockResolvedValueOnce({ ...mockTicket, projectId: 5 });
+      txnTicketManager.save.mockImplementation(async (_entity, value) => value);
+      txnTicketManager.create.mockReturnValue({
+        action: AuditAction.AUTO_ASSIGN,
+        actor: 'SYSTEM',
+        performedBy: null,
+      });
+
+      const qb = mockUserRepoQb();
+      qb.getRawOne.mockResolvedValue({ userId: 3, openTicketCount: '1' });
+
+      await service.create(dto);
+
+      expectDeveloperWorkloadBaseQuery(qb, 5);
+      expect(qb.orderBy).toHaveBeenCalledWith(OPEN_TICKET_COUNT_SQL, 'ASC');
+      expect(qb.addOrderBy).toHaveBeenCalledWith('user.createdAt', 'ASC');
+      expect(qb.limit).toHaveBeenCalledWith(1);
+    });
+
+    it('should use the same open-ticket rules as getProjectWorkload', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      repo.create.mockReturnValue({ ...mockTicket });
+      repo.save.mockResolvedValue({ ...mockTicket });
+
+      const workloadQb = mockUserRepoQb();
+      workloadQb.getRawMany.mockResolvedValue([]);
+      await service.getProjectWorkload(1);
+
+      userRepo.createQueryBuilder.mockClear();
+
+      const assignQb = mockUserRepoQb();
+      assignQb.getRawOne.mockResolvedValue(undefined);
+      repo.save.mockResolvedValueOnce({ ...mockTicket });
+      await service.create(dto);
+
+      expect(assignQb.leftJoin.mock.calls[0]).toEqual(
+        workloadQb.leftJoin.mock.calls[0],
+      );
+      expect(assignQb.innerJoin.mock.calls[0]).toEqual(
+        workloadQb.innerJoin.mock.calls[0],
+      );
+      expect(assignQb.where.mock.calls[0]).toEqual(
+        workloadQb.where.mock.calls[0],
+      );
     });
   });
 
@@ -462,7 +761,9 @@ describe('TicketService', () => {
       repo.find.mockResolvedValue([mockTicket]);
 
       const csv = await service.exportToCsv(1);
-      expect(csv).toContain('id,title,description,status,priority,type,assigneeId');
+      expect(csv).toContain(
+        'id,title,description,status,priority,type,assigneeId',
+      );
       expect(csv).not.toContain('dueDate');
       expect(csv).not.toContain('isOverdue');
       expect(csv).toContain('Fix login bug');
@@ -486,9 +787,13 @@ describe('TicketService', () => {
     it('should create tickets from valid CSV rows, audit CREATE per row, and trigger auto-assign', async () => {
       projectService.findOne.mockResolvedValue({} as never);
       repo.create.mockReturnValue(mockTicket);
-      repo.save
-        .mockResolvedValueOnce({ ...mockTicket })
-        .mockResolvedValueOnce({ ...mockTicket, assigneeId: 9 });
+      repo.save.mockResolvedValueOnce({ ...mockTicket });
+      txnTicketManager.save.mockImplementation(async (_entity, value) => value);
+      txnTicketManager.create.mockReturnValue({
+        action: AuditAction.AUTO_ASSIGN,
+        actor: 'SYSTEM',
+        performedBy: null,
+      });
       const qb = mockUserRepoQb();
       qb.getRawOne.mockResolvedValue({ userId: 9, openTicketCount: '0' });
 
@@ -497,7 +802,11 @@ describe('TicketService', () => {
         'Bug,Desc,TODO,HIGH,BUG,',
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      const result = await service.importFromCsv(
+        1,
+        Buffer.from(csv),
+        importerUserId,
+      );
       expect(result.created).toBe(1);
       expect(result.failed).toBe(0);
       expect(auditLogService.log).toHaveBeenCalledWith({
@@ -507,8 +816,12 @@ describe('TicketService', () => {
         performedBy: importerUserId,
         actor: 'USER',
       });
-      expect(auditLogService.log).toHaveBeenCalledWith(
-        expect.objectContaining({ action: AuditAction.AUTO_ASSIGN, actor: 'SYSTEM' }),
+      expect(txnTicketManager.save).toHaveBeenCalledWith(
+        AuditLog,
+        expect.objectContaining({
+          action: AuditAction.AUTO_ASSIGN,
+          actor: 'SYSTEM',
+        }),
       );
     });
 
@@ -520,7 +833,11 @@ describe('TicketService', () => {
         'Fix login bug,Desc,BLOCKED,HIGH,BUG,',
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      const result = await service.importFromCsv(
+        1,
+        Buffer.from(csv),
+        importerUserId,
+      );
       expect(result.failed).toBe(1);
       expect(result.errors).toHaveLength(1);
       expect(result.errors[0]).toEqual({
@@ -546,7 +863,11 @@ describe('TicketService', () => {
         ',Bad,INVALID,HIGH,BUG,',
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      const result = await service.importFromCsv(
+        1,
+        Buffer.from(csv),
+        importerUserId,
+      );
       expect(result.created).toBe(1);
       expect(result.failed).toBe(1);
       expect(auditLogService.log).toHaveBeenCalledTimes(1);
@@ -571,7 +892,11 @@ describe('TicketService', () => {
         'Bug,Desc,TODO,HIGH,BUG,5',
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      const result = await service.importFromCsv(
+        1,
+        Buffer.from(csv),
+        importerUserId,
+      );
       expect(result.created).toBe(1);
       expect(userService.findOne).toHaveBeenCalledWith(5);
       expect(userRepo.createQueryBuilder).not.toHaveBeenCalled();
@@ -596,7 +921,11 @@ describe('TicketService', () => {
         'Bug,Desc,TODO,HIGH,BUG,5',
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      const result = await service.importFromCsv(
+        1,
+        Buffer.from(csv),
+        importerUserId,
+      );
       expect(result.created).toBe(0);
       expect(result.failed).toBe(1);
       expect(auditLogService.log).not.toHaveBeenCalled();
@@ -615,7 +944,11 @@ describe('TicketService', () => {
         'Done,Desc,DONE,HIGH,BUG,',
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      const result = await service.importFromCsv(
+        1,
+        Buffer.from(csv),
+        importerUserId,
+      );
       expect(result.created).toBe(1);
     });
 
@@ -631,7 +964,11 @@ describe('TicketService', () => {
         '"Title, with comma","Desc, also",TODO,HIGH,BUG,',
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      const result = await service.importFromCsv(
+        1,
+        Buffer.from(csv),
+        importerUserId,
+      );
       expect(result.created).toBe(1);
       expect(repo.create).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -639,6 +976,57 @@ describe('TicketService', () => {
           description: 'Desc, also',
         }),
       );
+    });
+
+    it('should import an optional dueDate column when it is a valid ISO-8601 date', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+      repo.create.mockReturnValue(mockTicket);
+      repo.save.mockResolvedValue(mockTicket);
+      const qb = mockUserRepoQb();
+      qb.getRawOne.mockResolvedValue(undefined);
+
+      const csv = [
+        'title,description,status,priority,type,assigneeId,dueDate',
+        'Bug,Desc,TODO,HIGH,BUG,,2026-06-01T00:00:00.000Z',
+      ].join('\n');
+
+      const result = await service.importFromCsv(
+        1,
+        Buffer.from(csv),
+        importerUserId,
+      );
+
+      expect(result.created).toBe(1);
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          dueDate: new Date('2026-06-01T00:00:00.000Z'),
+        }),
+      );
+    });
+
+    it('should fail a CSV row with an invalid dueDate without leaking database errors', async () => {
+      projectService.findOne.mockResolvedValue({} as never);
+
+      const csv = [
+        'title,description,status,priority,type,assigneeId,dueDate',
+        'Bug,Desc,TODO,HIGH,BUG,,not-a-date',
+      ].join('\n');
+
+      const result = await service.importFromCsv(
+        1,
+        Buffer.from(csv),
+        importerUserId,
+      );
+
+      expect(result.created).toBe(0);
+      expect(result.failed).toBe(1);
+      expect(result.errors[0]).toEqual({
+        row: 2,
+        title: 'Bug',
+        field: 'dueDate',
+        message: 'dueDate must be a valid ISO-8601 date string',
+      });
+      expect(repo.save).not.toHaveBeenCalled();
     });
 
     it('should emit one structured error per invalid field on the same row', async () => {
@@ -649,7 +1037,11 @@ describe('TicketService', () => {
         'T,D,TODO,INVALID_P,INVALID_T,',
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      const result = await service.importFromCsv(
+        1,
+        Buffer.from(csv),
+        importerUserId,
+      );
       expect(result.failed).toBe(1);
       expect(result.errors).toHaveLength(2);
       expect(result.errors[0]).toMatchObject({
@@ -674,7 +1066,11 @@ describe('TicketService', () => {
         ',Desc,TODO,HIGH,BUG,',
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      const result = await service.importFromCsv(
+        1,
+        Buffer.from(csv),
+        importerUserId,
+      );
       expect(result.failed).toBe(1);
       expect(result.errors[0]).toMatchObject({
         row: 2,
@@ -693,7 +1089,11 @@ describe('TicketService', () => {
         `${longTitle},D,TODO,HIGH,BUG,`,
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      const result = await service.importFromCsv(
+        1,
+        Buffer.from(csv),
+        importerUserId,
+      );
       expect(result.failed).toBe(1);
       expect(result.errors[0]).toMatchObject({
         field: 'title',
@@ -710,7 +1110,11 @@ describe('TicketService', () => {
         `T,${longDesc},TODO,HIGH,BUG,`,
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      const result = await service.importFromCsv(
+        1,
+        Buffer.from(csv),
+        importerUserId,
+      );
       expect(result.failed).toBe(1);
       expect(result.errors[0]).toMatchObject({
         field: 'description',
@@ -726,7 +1130,11 @@ describe('TicketService', () => {
         'T,D,TODO,HIGH,BUG,1.5',
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      const result = await service.importFromCsv(
+        1,
+        Buffer.from(csv),
+        importerUserId,
+      );
       expect(result.failed).toBe(1);
       expect(result.errors[0]).toMatchObject({
         field: 'assigneeId',
@@ -743,7 +1151,11 @@ describe('TicketService', () => {
         'T,D,TODO,HIGH,BUG,99',
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      const result = await service.importFromCsv(
+        1,
+        Buffer.from(csv),
+        importerUserId,
+      );
       expect(result.failed).toBe(1);
       expect(result.errors[0]).toEqual({
         row: 2,
@@ -758,14 +1170,20 @@ describe('TicketService', () => {
       projectService.findOne.mockResolvedValue({} as never);
       userService.findOne.mockResolvedValue({} as never);
       repo.create.mockReturnValue(mockTicket);
-      repo.save.mockRejectedValue(new Error('duplicate key value violates unique constraint'));
+      repo.save.mockRejectedValue(
+        new Error('duplicate key value violates unique constraint'),
+      );
 
       const csv = [
         'title,description,status,priority,type,assigneeId',
         'Bug,Desc,TODO,HIGH,BUG,5',
       ].join('\n');
 
-      const result = await service.importFromCsv(1, Buffer.from(csv), importerUserId);
+      const result = await service.importFromCsv(
+        1,
+        Buffer.from(csv),
+        importerUserId,
+      );
       expect(result.failed).toBe(1);
       expect(result.errors[0]).toEqual({
         row: 2,
@@ -849,35 +1267,56 @@ describe('TicketService', () => {
   describe('addDependency', () => {
     it('should add a blocker when both tickets share the same project', async () => {
       const blocker = { ...mockTicket, id: 42 };
-      repo.findOne.mockResolvedValue({ ...mockTicket, blockedBy: [] } as Ticket);
+      repo.findOne.mockResolvedValue({
+        ...mockTicket,
+        blockedBy: [],
+      } as Ticket);
       repo.findOneBy.mockResolvedValue(blocker);
       repo.save.mockResolvedValue(mockTicket);
 
-      await expect(service.addDependency(1, { blockedBy: 42 })).resolves.toBeUndefined();
+      await expect(
+        service.addDependency(1, { blockedBy: 42 }),
+      ).resolves.toBeUndefined();
     });
 
     it('should reject when tickets belong to different projects', async () => {
       const blocker = { ...mockTicket, id: 42, projectId: 99 };
-      repo.findOne.mockResolvedValue({ ...mockTicket, blockedBy: [] } as Ticket);
+      repo.findOne.mockResolvedValue({
+        ...mockTicket,
+        blockedBy: [],
+      } as Ticket);
       repo.findOneBy.mockResolvedValue(blocker);
 
-      await expect(service.addDependency(1, { blockedBy: 42 })).rejects.toThrow(BadRequestException);
+      await expect(service.addDependency(1, { blockedBy: 42 })).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('should reject self-blocking', async () => {
-      await expect(service.addDependency(1, { blockedBy: 1 })).rejects.toThrow(BadRequestException);
+      await expect(service.addDependency(1, { blockedBy: 1 })).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('should reject duplicate dependencies', async () => {
       const blocker = { ...mockTicket, id: 42 };
-      repo.findOne.mockResolvedValue({ ...mockTicket, blockedBy: [blocker] } as Ticket);
+      repo.findOne.mockResolvedValue({
+        ...mockTicket,
+        blockedBy: [blocker],
+      } as Ticket);
       repo.findOneBy.mockResolvedValue(blocker);
 
-      await expect(service.addDependency(1, { blockedBy: 42 })).rejects.toThrow(BadRequestException);
+      await expect(service.addDependency(1, { blockedBy: 42 })).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('should reject circular dependencies with an informative message', async () => {
-      const blocker = { ...mockTicket, id: 42, blockedBy: [{ ...mockTicket, id: 1 }] };
+      const blocker = {
+        ...mockTicket,
+        id: 42,
+        blockedBy: [{ ...mockTicket, id: 1 }],
+      };
       repo.findOne
         .mockResolvedValueOnce({ ...mockTicket, blockedBy: [] } as Ticket)
         .mockResolvedValueOnce(blocker as Ticket);
@@ -889,7 +1328,11 @@ describe('TicketService', () => {
     });
 
     it('should reject transitive circular dependencies', async () => {
-      const ticketC = { ...mockTicket, id: 3, blockedBy: [{ ...mockTicket, id: 1 }] };
+      const ticketC = {
+        ...mockTicket,
+        id: 3,
+        blockedBy: [{ ...mockTicket, id: 1 }],
+      };
       const ticketB = { ...mockTicket, id: 42, blockedBy: [ticketC] };
       repo.findOne
         .mockResolvedValueOnce({ ...mockTicket, blockedBy: [] } as Ticket)
@@ -904,7 +1347,9 @@ describe('TicketService', () => {
 
     it('should throw NotFoundException when ticket does not exist', async () => {
       repo.findOne.mockResolvedValue(null);
-      await expect(service.addDependency(999, { blockedBy: 42 })).rejects.toThrow(NotFoundException);
+      await expect(
+        service.addDependency(999, { blockedBy: 42 }),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 
@@ -913,7 +1358,10 @@ describe('TicketService', () => {
   describe('getDependencies', () => {
     it('should return the blockedBy array', async () => {
       const blocker = { ...mockTicket, id: 42 };
-      repo.findOne.mockResolvedValue({ ...mockTicket, blockedBy: [blocker] } as Ticket);
+      repo.findOne.mockResolvedValue({
+        ...mockTicket,
+        blockedBy: [blocker],
+      } as Ticket);
 
       const result = await service.getDependencies(1);
       expect(result).toHaveLength(1);
@@ -922,7 +1370,9 @@ describe('TicketService', () => {
 
     it('should throw NotFoundException when ticket does not exist', async () => {
       repo.findOne.mockResolvedValue(null);
-      await expect(service.getDependencies(999)).rejects.toThrow(NotFoundException);
+      await expect(service.getDependencies(999)).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -931,15 +1381,23 @@ describe('TicketService', () => {
   describe('removeDependency', () => {
     it('should remove the blocker from the array', async () => {
       const blocker = { ...mockTicket, id: 42 };
-      repo.findOne.mockResolvedValue({ ...mockTicket, blockedBy: [blocker] } as Ticket);
+      repo.findOne.mockResolvedValue({
+        ...mockTicket,
+        blockedBy: [blocker],
+      } as Ticket);
       repo.save.mockResolvedValue(mockTicket);
 
       await expect(service.removeDependency(1, 42)).resolves.toBeUndefined();
     });
 
     it('should throw NotFoundException when the dependency does not exist', async () => {
-      repo.findOne.mockResolvedValue({ ...mockTicket, blockedBy: [] } as Ticket);
-      await expect(service.removeDependency(1, 42)).rejects.toThrow(NotFoundException);
+      repo.findOne.mockResolvedValue({
+        ...mockTicket,
+        blockedBy: [],
+      } as Ticket);
+      await expect(service.removeDependency(1, 42)).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 });

@@ -15,7 +15,9 @@ import { Transform } from 'class-transformer';
  */
 export class CreateProjectDto {
   /** Project name (1–150 characters, trimmed). */
-  @Transform(({ value }: { value: string }) => value?.trim())
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @IsNotEmpty()
   @MinLength(1)
@@ -24,7 +26,9 @@ export class CreateProjectDto {
 
   /** Optional project description (max 2000 characters, trimmed). */
   @IsOptional()
-  @Transform(({ value }: { value: string }) => value?.trim())
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @MaxLength(2000)
   description?: string;

@@ -97,10 +97,7 @@ describe('UserController', () => {
   describe('create', () => {
     it('POST /users handler is ADMIN-only (@Roles)', () => {
       expect(
-        Reflect.getMetadata(
-          ROLES_KEY,
-          UserController.prototype.create,
-        ),
+        Reflect.getMetadata(ROLES_KEY, UserController.prototype.create),
       ).toEqual([Role.ADMIN]);
     });
 
@@ -119,13 +116,20 @@ describe('UserController', () => {
       const result = await controller.create(dto, req);
       expect(result).toEqual(mockUser);
       expect(auditLogService.log).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'CREATE', entityType: 'USER', entityId: 1, performedBy: 10 }),
+        expect.objectContaining({
+          action: 'CREATE',
+          entityType: 'USER',
+          entityId: 1,
+          performedBy: 10,
+        }),
       );
     });
 
     it('should propagate ConflictException', async () => {
       service.create.mockRejectedValue(new ConflictException());
-      await expect(controller.create(dto, mockRequest(10))).rejects.toThrow(ConflictException);
+      await expect(controller.create(dto, mockRequest(10))).rejects.toThrow(
+        ConflictException,
+      );
     });
   });
 
@@ -194,10 +198,7 @@ describe('UserController', () => {
   describe('remove', () => {
     it('DELETE /users/:userId handler is ADMIN-only (@Roles)', () => {
       expect(
-        Reflect.getMetadata(
-          ROLES_KEY,
-          UserController.prototype.remove,
-        ),
+        Reflect.getMetadata(ROLES_KEY, UserController.prototype.remove),
       ).toEqual([Role.ADMIN]);
     });
 
@@ -211,7 +212,9 @@ describe('UserController', () => {
 
     it('should propagate NotFoundException', async () => {
       service.remove.mockRejectedValue(new NotFoundException());
-      await expect(controller.remove(999, mockRequest(10))).rejects.toThrow(NotFoundException);
+      await expect(controller.remove(999, mockRequest(10))).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 

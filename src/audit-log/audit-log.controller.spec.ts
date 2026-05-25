@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { BadRequestException } from '@nestjs/common';
 import { AuditLogController } from './audit-log.controller';
 import { AuditLogService } from './audit-log.service';
 import { AuditLog } from './audit-log.entity';
@@ -76,6 +77,13 @@ describe('AuditLogController', () => {
         action: undefined,
         actor: 'SYSTEM',
       });
+    });
+
+    it('should reject invalid entityId filters with 400', async () => {
+      expect(() => controller.findAll(undefined, 'abc')).toThrow(
+        BadRequestException,
+      );
+      expect(service.findAll).not.toHaveBeenCalled();
     });
   });
 });

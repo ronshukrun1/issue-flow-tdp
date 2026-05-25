@@ -3967,3 +3967,134 @@ IssueFlow is a **mature, well-tested implementation** with strong coverage of th
 | `run.md` | Phase 6 feature inventory |
 | `prompts.md` | This log entry |
 
+---
+
+## Project Workload API and Auto-Assignment Consistency Audit
+
+**Date:** Sunday, May 24, 2026  
+**Model:** Composer (Cursor Agent session)
+
+### Prompt
+
+> Goal: Audit, refactor, and harden the complete Project Workload and Auto-Assignment flow so GET /projects/:projectId/workload and POST /tickets without assigneeId use the same workload rules and fully match the README contract and TDP requirements.
+>
+> Technical specification for Workload API:
+> - Route: GET /projects/:projectId/workload (registered before GET /projects/:projectId).
+> - Validate project exists and is active; NotFoundException: "Project with ID N not found".
+> - Include only role = DEVELOPER; exclude ADMIN; LEFT JOIN so zero-workload developers appear.
+> - openTicketCount: tickets in target project, assigned to developer, status != DONE, not soft-deleted.
+> - Response: `[{ userId, username, openTicketCount }]` only; openTicketCount as number.
+> - Sort: openTicketCount ASC, then user.createdAt ASC (same tie-breaker as auto-assignment).
+>
+> Auto-assignment consistency:
+> - POST /tickets without assigneeId assigns least-loaded DEVELOPER in project; same counting rules; tie-break oldest registration; no DEVELOPER → assigneeId null; only on create; explicit assigneeId skips auto-assign; AUTO_ASSIGN audit with actor SYSTEM.
+>
+> Tests in ticket.service.spec.ts (and controller delegation); update prompts.md and run.md as needed.
+
+### Summary
+
+Audited the existing Phase 4 implementation. Core SQL (LEFT JOIN + COUNT, DEVELOPER-only filter, project-scoped non-DONE active tickets) was already correct. **Gap fixed:** `getProjectWorkload()` was missing the secondary sort `user.createdAt ASC`, so workload listing could disagree with auto-assignment tie-breaking.
+
+**Refactor:** Extracted shared `OPEN_TICKET_JOIN_CONDITION` and `createDeveloperWorkloadQuery(projectId)` so `autoAssign()` and `getProjectWorkload()` cannot drift.
+
+**Verified unchanged:** Route `GET /projects/:projectId/workload` before `GET /projects/:projectId`; response shape `[{ userId, username, openTicketCount }]`; JWT protection; `ProjectService.findOne` NotFound message; auto-assign only on create/CSV when `assigneeId` null; `AUTO_ASSIGN` audit.
+
+### Workload rules (implemented)
+
+| Rule | Enforcement |
+|------|-------------|
+| DEVELOPER only | `user.role = DEVELOPER` |
+| ADMIN excluded | Same filter |
+| Zero-workload developers included | `LEFT JOIN` tickets |
+| Project-scoped | `ticket.projectId = :projectId` |
+| Assigned to developer | `ticket.assigneeId = user.id` |
+| Not DONE | `ticket.status != DONE` |
+| Not soft-deleted | `ticket.deletedAt IS NULL` |
+| Numeric count | `Number(COUNT(...))` in mapper |
+| Sort | `COUNT ASC`, `user.createdAt ASC` |
+
+### Auto-assignment rules (implemented)
+
+Same open-ticket definition via `createDeveloperWorkloadQuery`; `ORDER BY COUNT ASC, user.createdAt ASC LIMIT 1`; `AUTO_ASSIGN` / `actor: SYSTEM` / `performedBy: null`; no assign when no DEVELOPER; skipped when `assigneeId` provided or on `update()`.
+
+### Files modified
+
+| File | Change |
+|------|--------|
+| `src/ticket/ticket.service.ts` | Shared workload query; workload tie-break sort |
+| `src/ticket/ticket.service.spec.ts` | Workload + auto-assign contract tests |
+| `run.md` | Workload & auto-assignment section |
+| `prompts.md` | This log entry |
+
+### Verification
+
+- `npx tsc --noEmit`
+- `npm run build`
+- `npm test`
+- `bash tests.sh` (if server available)
+
+---
+
+## Core Optimization and Hardening
+
+> ### Prompt
+>
+> You are an elite Senior Backend Engineer and NestJS Architect. 
+>
+> These are the strict implementation requirements for our system. Review all relevant files (controllers, services, entities, DTOs, and spec files) across the codebase before making any modifications, and implement the following rules directly inside the files:@README.md @TDP_issueflow_requirements.pdf 
+>
+> 1. Optional Fields & DTO Validation:
+>    - The fields `assigneeId` and `dueDate` are fully optional. They can be provided or omitted during manual ticket creation (`POST /tickets`) and bulk CSV import (`POST /tickets/import`). Prevent any raw validation or database leakage. Do not allow invalid values into the API, and return informative errors.
+>
+> 2. Soft Delete Lifecycle:
+>    - Hiding from Queries: Tickets that are soft-deleted must be strictly hidden from regular user queries for fetching a single ticket or a list (`GET /tickets`). Soft-deleting an individual ticket affects only itself and does not alter its parent project.
+>    - Cascading Project Soft-Delete: When an ADMIN soft-deletes a project (`DELETE /projects/:projectId`), perform a cascading update to concurrently soft-delete all its associated tickets in the database within a single transaction.
+>    - Precise Time Restoration: When an ADMIN restores a project (`POST /projects/:projectId/restore`), restore ONLY the tickets that were soft-deleted automatically at the exact same timestamp as the project deletion. Tickets soft-deleted individually before the project deletion must remain soft-deleted.
+>    - Orphan Ticket Guard: Explicitly block any individual ticket restoration request if its parent project does not exist or is currently soft-deleted in the database.
+>    - ADMIN-Only View: Ensure `GET /tickets/deleted?projectId=:projectId` is accessible exclusively to authenticated ADMIN roles.
+>
+> 3. Auto-Escalation Mechanism:
+>    - Date Dependency: The auto-escalation mechanism applies and evaluates ONLY tickets that have an explicit `dueDate` set. If a ticket does not have a due date, its priority level must never change.
+>    - Conditional `isOverdue` Visibility: The `isOverdue` flag must be visible in GET responses ONLY when its value is `true`. If it is `false`, it must be completely removed/stripped from the JSON response object to strictly match the README contract samples.
+>    - Manual Date Update Override: If a user explicitly updates the `dueDate` via a `PATCH` request and the new date has not passed yet, reset `isOverdue` back to `false`. This action must not modify or affect the ticket's current status field.
+>
+> 4. Ticket Dependencies:
+>    - Project Limitation: Enforce that when establishing a dependency blocker relationship (`POST /tickets/:ticketId/dependencies`), both tickets MUST belong to the exact same `projectId`. Throw a clear, informative BadRequestException if cross-project blocking is attempted.
+>
+> 5. Auto-Assignment & Workload API Synchronization:
+>    - Trigger Conditions: The auto-assignment mechanism must be triggered ONLY on ticket creation and bulk CSV import (`POST /tickets/import`) when `assigneeId` is omitted. It must never run on ticket updates (`PATCH`).
+>    - Project-Scoped Workload Calculations: The candidate developers for BOTH the Auto-Assignment and the Workload API (`GET /projects/:projectId/workload`) must be evaluated using the exact same project-scoped workload calculation:
+>      * Candidate Scope: Inspect existing tickets belonging strictly to that specific `projectId`. Isolate the active `DEVELOPER` users currently assigned to those tickets, and count their active open workload (tickets where status is NOT `DONE` and `deletedAt IS NULL`).
+>      * Zero-Workload Inclusion: Developers who are assigned to at least one ticket in that project, but currently have 0 active open tickets, must still be returned in the workload response with an `openTicketCount` of 0 using an accurate SQL `LEFT JOIN`.
+>      * Empty Project Fallback Edge Case: If no developers are currently assigned to any tickets in the project, or the project contains zero tickets entirely, the auto-assignment mechanism must fallback to creating the ticket with `assigneeId = null` smoothly without failing.
+>      * Deterministic Tie-Breaker: Sort the workload array and auto-assignment priority by `openTicketCount ASC`. If multiple eligible developers share the exact same lowest workload count, break the tie deterministically using the user's registration order: `.addOrderBy('user.createdAt', 'ASC')` (oldest registrant first).
+>      * Exclusion Guard: Completely exclude `ADMIN` roles from auto-assignment and workload tracking.
+>      * System Logging: For every successful auto-assignment action, write a transaction-bound system audit log row (`action: 'AUTO_ASSIGN'`, `actor: 'SYSTEM'`, `performedBy: null`).
+>    - Workload API Response Shape: Ensure `GET /projects/:projectId/workload` returns a clean array matching the exact field layout and ordering in the README: `[ { "userId": number, "username": "string", "openTicketCount": number } ]`.
+>
+> 6. Testing, Execution & Complete Documentation Constraints:
+>    - Update and expand focused unit/integration spec files (such as `ticket.service.spec.ts` and `project.service.spec.ts`) to fully cover these specific edge cases. Do NOT break any existing tests.
+>    - Do NOT create, add, or expose any new API routes, parameters, or controllers.
+>    - Run `./tests.sh` and `npm run test` to guarantee 100% green test success with zero regressions.
+>    - Update `run.md` wherever necessary to reflect any shifts or edge cases handled.
+>    - Append this exact prompt and your complete implementation response inside a blockquote (`>`) under a new section titled "Core Optimization and Hardening" at the end of `prompts.md`. Do NOT truncate or omit any part of this instructions log.
+>
+> ### Implementation Response
+>
+> Implemented the hardening directly in the existing NestJS files without adding routes, parameters, or controllers.
+>
+> Optional ticket fields are now explicitly nullable/optional in DTO validation, `dueDate` is trimmed and validated as ISO-8601 when supplied, and CSV import accepts an optional `dueDate` column with structured row errors instead of raw validation or database messages.
+>
+> Soft-delete behavior was tightened: regular ticket queries continue to rely on TypeORM's active-record filtering, project soft-delete now stamps the project and all active child tickets with one exact deletion timestamp inside a transaction, project restore only restores tickets with that exact timestamp, and individual ticket restore is blocked with a clear `BadRequestException` while the parent project is missing or soft-deleted.
+>
+> Auto-escalation behavior was aligned to the contract: tickets without `dueDate` are not selected for escalation, `isOverdue` serializes into JSON only when `true`, and manually moving `dueDate` to a future date clears `isOverdue` without touching the status.
+>
+> Workload and auto-assignment now share the same project-scoped developer workload query. The query limits candidates to `DEVELOPER` users already assigned to at least one active ticket in that project, excludes `ADMIN`, includes zero-open-workload project developers through a `LEFT JOIN`, counts only non-`DONE` and non-deleted tickets, and sorts by `openTicketCount ASC` then `user.createdAt ASC`. Auto-assignment runs only on ticket creation and CSV import when `assigneeId` is absent, gracefully leaves the ticket unassigned when no eligible project developer exists, and writes the `AUTO_ASSIGN` system audit row in the same transaction as the assignment.
+>
+> Expanded focused coverage in `ticket.service.spec.ts`, `project.service.spec.ts`, and the integration flow for DTO/CSV edge cases, precise soft-delete restore behavior, orphan restore blocking, future due-date override, conditional `isOverdue` JSON output, project-linked workload membership, shared workload/assignment SQL, and transaction-bound system audit logging. Updated `run.md` to document the hardened edge cases.
+>
+> Verification completed successfully:
+>
+> - `npm run test` — 24 suites passed, 315 tests passed.
+> - `./tests.sh` — 44/44 contract checks passed, 100% contract coverage.
+

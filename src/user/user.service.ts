@@ -16,6 +16,11 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { Role } from './role.enum';
 import { Project } from '../project/project.entity';
 import { Ticket } from '../ticket/ticket.entity';
+import { TicketStatus } from '../ticket/enums/ticket-status.enum';
+import {
+  OPEN_TICKET_COUNT_SQL,
+  applyProjectDeveloperWorkloadQuery,
+} from '../ticket/ticket-workload.query';
 import { AuditLog } from '../audit-log/audit-log.entity';
 import { AuditAction } from '../audit-log/enums/audit-action.enum';
 
@@ -84,7 +89,10 @@ export class UserService implements OnModuleInit {
     const count = await this.userRepository.count();
     if (count > 0) return;
 
-    const hashedPassword = await bcrypt.hash(SEEDED_ADMIN_PASSWORD, BCRYPT_SALT_ROUNDS);
+    const hashedPassword = await bcrypt.hash(
+      SEEDED_ADMIN_PASSWORD,
+      BCRYPT_SALT_ROUNDS,
+    );
     const admin = this.userRepository.create({
       username: BOOTSTRAP_ADMIN_USERNAME,
       email: 'admin@issueflow.com',
@@ -238,8 +246,10 @@ export class UserService implements OnModuleInit {
    * Permanently removes a user from the system.
    *
    * Before deletion, owned projects are reassigned to the bootstrap
-   * administrator and assigned tickets are explicitly unassigned, each
-   * producing a SYSTEM audit log entry within the same transaction.
+   * administrator. Completed assigned tickets are explicitly unassigned;
+   * active assigned tickets are reassigned using the same project-scoped
+   * workload query as ticket auto-assignment, each producing a SYSTEM
+   * audit log entry within the same transaction.
    *
    * @param id - The numeric user identifier.
    * @throws {NotFoundException} When no user with the given ID exists.
@@ -286,7 +296,22 @@ export class UserService implements OnModuleInit {
       }
 
       for (const ticket of assignedTickets) {
-        ticket.assigneeId = null;
+        if (ticket.status === TicketStatus.DONE) {
+          ticket.assigneeId = null;
+        } else {
+          const reassignment = await applyProjectDeveloperWorkloadQuery(
+            manager.createQueryBuilder(User, 'user'),
+            ticket.projectId,
+            { excludeUserId: id },
+          )
+            .orderBy(OPEN_TICKET_COUNT_SQL, 'ASC')
+            .addOrderBy('user.createdAt', 'ASC')
+            .limit(1)
+            .getRawOne<{ userId: number; openTicketCount: string }>();
+
+          ticket.assigneeId = reassignment ? Number(reassignment.userId) : null;
+        }
+
         await manager.save(Ticket, ticket);
         auditEntries.push(
           manager.create(AuditLog, {

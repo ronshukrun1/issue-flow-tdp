@@ -21,7 +21,8 @@ export class MaxTicketCsvSizeValidator extends FileValidator<{
     return file.size <= this.validationOptions.maxBytes;
   }
 
-  buildErrorMessage(_file?: Express.Multer.File): string {
+  buildErrorMessage(file?: Express.Multer.File): string {
+    void file;
     return `Ticket CSV file exceeds the maximum allowed size of ${this.validationOptions.maxBytes} bytes (10 MB)`;
   }
 }
@@ -30,7 +31,9 @@ export class MaxTicketCsvSizeValidator extends FileValidator<{
  * Ensures the client supplied an original filename ending in `.csv`
  * (case-insensitive). MIME type alone is not sufficient.
  */
-export class CsvOriginalNameValidator extends FileValidator<Record<string, never>> {
+export class CsvOriginalNameValidator extends FileValidator<
+  Record<string, never>
+> {
   constructor() {
     super({});
   }
@@ -43,7 +46,8 @@ export class CsvOriginalNameValidator extends FileValidator<Record<string, never
     return /\.csv$/i.test(name);
   }
 
-  buildErrorMessage(_file?: Express.Multer.File): string {
+  buildErrorMessage(file?: Express.Multer.File): string {
+    void file;
     return 'Uploaded file must have a .csv extension and a valid filename';
   }
 }

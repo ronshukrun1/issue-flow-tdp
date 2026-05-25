@@ -153,7 +153,8 @@ Design choices that **go beyond** the README contract — added to reduce privil
 |----------|-------------------------|
 | **Bootstrap `admin` cannot be deleted** | Seeded account is protected (**400**) so the system always retains at least one administrator. |
 | **User delete — project ownership** | Before hard-delete, projects owned by the removed user are reassigned to the bootstrap **`admin`** account (not left orphaned and not transferred to whoever clicked delete). |
-| **Comment author from JWT** | README shows optional **`authorId`** in the request body; runtime **ignores** client-supplied author and uses the JWT identity — prevents author spoofing. |
+| **User delete — ticket assignments** | When a user is deleted, completed (`DONE`) tickets are left unassigned (`null`), whereas open/active tickets are dynamically re-assigned to the project developer with the lowest workload using the auto-assignment engine. |
+| **Comment author validation** | README requires **`authorId`** in the request body; runtime rejects the request unless it matches the JWT identity — prevents author spoofing while preserving the contract body. |
 | **Comment edit/delete — ownership** | **DEVELOPER** may **PATCH** / **DELETE** only comments they authored; **ADMIN** is unrestricted. Not specified in README. |
 | **Attachment upload limits** | 10 MiB max per file; MIME allowlist on declared **`file.mimetype`** — limits upload abuse (not defined in README). |
 | **CSV import limits** | README does not cap uploads. **`POST /tickets/import`**: **10 MiB** max, **`text/csv`** MIME, **`.csv`** filename required — rejected at the multipart boundary. **10,000** data rows max; malformed CSV or row overflow → **400** with **no** partial import — prevents loading huge files into memory and overloading the server. |
@@ -166,10 +167,18 @@ Design choices that **go beyond** the README contract — added to reduce privil
 |--------|------------------|
 | **Auth** | JWT login/logout (in-memory revocation), global guard, RBAC `@Roles` |
 | **Users** | CRUD, bcrypt passwords, admin-only create/delete |
-| **Projects** | CRUD, soft-delete + restore, workload API |
-| **Tickets** | Lifecycle, auto-assign, auto-escalation cron, CSV import/export, dependencies |
+| **Projects** | CRUD, soft-delete + restore, **`GET /projects/:projectId/workload`** (developer open-ticket counts for auto-assignment) |
+| **Tickets** | Lifecycle, auto-assign on create when `assigneeId` omitted, auto-escalation cron, CSV import/export, dependencies |
 | **Comments** | `@mentions` via `CommentMention` join entity, author from JWT |
 | **Attachments** | Metadata-only upload |
 | **Audit logs** | Append-only, fault-tolerant, SYSTEM actor for automation |
+
+### Workload, auto-assignment, and ticket edge cases
+
+- **Optional fields** — `assigneeId` and `dueDate` can be omitted or set to `null` on ticket creation. CSV import accepts an optional `dueDate` column; when present it must be ISO-8601, and row errors are returned as structured `{ row, title, field, message }` entries.
+- **`GET /projects/:projectId/workload`** — returns `[{ userId, username, openTicketCount }]` only for **DEVELOPER** users already linked to at least one active ticket in that project (ADMIN users are excluded). Developers with only `DONE` tickets in the project are included with `openTicketCount: 0` via `LEFT JOIN`. `openTicketCount` counts only tickets in that project that are assigned to the developer, not `DONE`, and not soft-deleted. Sorted by `openTicketCount` ascending, then oldest registration (`user.createdAt`) first.
+- **`POST /tickets`** and **`POST /tickets/import`** without `assigneeId` — auto-assign to the project-linked DEVELOPER with the lowest `openTicketCount` using the same workload query; ties break on oldest registration. If no eligible developer is linked to the project, `assigneeId` stays `null`. Each successful auto-assignment writes a transaction-bound **`AUTO_ASSIGN`** audit log with `actor: SYSTEM`. Auto-assignment never runs on `PATCH`.
+- **Soft delete/restore** — normal ticket queries hide soft-deleted rows. Project soft-delete stamps the project and all active child tickets with the same deletion timestamp in one transaction. Project restore only restores tickets that share that exact deletion timestamp, so tickets deleted individually before the project delete remain deleted. Individual ticket restore is blocked while its parent project is missing or soft-deleted.
+- **Auto-escalation responses** — tickets without a `dueDate` are never escalated. `isOverdue` is emitted in ticket JSON as `true` or `false` per the README contract; manual `PATCH` of `dueDate` to a future date clears `isOverdue` without changing ticket status.
 
 Stack: NestJS 10, TypeORM, PostgreSQL, `@nestjs/swagger`, strict TypeScript, global `ValidationPipe`.

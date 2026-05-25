@@ -2,7 +2,12 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { Logger } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository, QueryFailedError, DataSource } from 'typeorm';
-import { NotFoundException, ConflictException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import {
+  NotFoundException,
+  ConflictException,
+  ForbiddenException,
+  BadRequestException,
+} from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import {
   UserService,
@@ -17,8 +22,15 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { Project } from '../project/project.entity';
 import { Ticket } from '../ticket/ticket.entity';
+import { TicketStatus } from '../ticket/enums/ticket-status.enum';
 import { AuditLog } from '../audit-log/audit-log.entity';
 import { AuditAction } from '../audit-log/enums/audit-action.enum';
+import {
+  OPEN_TICKET_COUNT_SQL,
+  OPEN_TICKET_JOIN_CONDITION,
+  PROJECT_ASSIGNEE_JOIN_CONDITION,
+  PROJECT_ASSIGNEE_TICKET_ALIAS,
+} from '../ticket/ticket-workload.query';
 
 jest.mock('bcrypt');
 
@@ -64,6 +76,7 @@ describe('UserService', () => {
     save: jest.Mock;
     remove: jest.Mock;
     create: jest.Mock;
+    createQueryBuilder: jest.Mock;
   };
   let loggerSpy: jest.SpyInstance;
 
@@ -81,10 +94,12 @@ describe('UserService', () => {
       save: jest.fn(),
       remove: jest.fn(),
       create: jest.fn((_entity, data) => data),
+      createQueryBuilder: jest.fn(),
     };
     dataSource = {
-      transaction: jest.fn(async (cb: (manager: typeof transactionManager) => Promise<void>) =>
-        cb(transactionManager),
+      transaction: jest.fn(
+        async (cb: (manager: typeof transactionManager) => Promise<void>) =>
+          cb(transactionManager),
       ),
     };
 
@@ -417,6 +432,25 @@ describe('UserService', () => {
       role: Role.ADMIN,
     };
 
+    const mockWorkloadQb = () => {
+      const qb = {
+        innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        addGroupBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        getRawOne: jest.fn(),
+      };
+      transactionManager.createQueryBuilder.mockReturnValue(qb);
+      return qb;
+    };
+
     it('should remove the user without error when no cascade work is needed', async () => {
       repo.findOneBy
         .mockResolvedValueOnce(mockUser)
@@ -429,31 +463,66 @@ describe('UserService', () => {
       expect(transactionManager.save).not.toHaveBeenCalled();
     });
 
-    it('should reassign owned projects and nullify ticket assignees with SYSTEM audit logs', async () => {
+    it('should reassign owned projects, nullify DONE tickets, and dynamically reassign active tickets with SYSTEM audit logs', async () => {
       const ownedProject = {
         id: 10,
         name: 'Owned',
         description: null,
         ownerId: mockUser.id,
       } as Project;
-      const assignedTicket = {
+      const doneTicket = {
         id: 20,
         assigneeId: mockUser.id,
+        status: TicketStatus.DONE,
+        projectId: 7,
       } as Ticket;
+      const activeTicket = {
+        id: 21,
+        assigneeId: mockUser.id,
+        status: TicketStatus.IN_PROGRESS,
+        projectId: 7,
+      } as Ticket;
+      const qb = mockWorkloadQb();
+      qb.getRawOne.mockResolvedValue({ userId: 42, openTicketCount: '1' });
 
       repo.findOneBy
         .mockResolvedValueOnce(mockUser)
         .mockResolvedValueOnce(bootstrapAdmin);
       transactionManager.find
         .mockResolvedValueOnce([ownedProject])
-        .mockResolvedValueOnce([assignedTicket]);
+        .mockResolvedValueOnce([doneTicket, activeTicket]);
 
       await service.remove(mockUser.id);
 
       expect(ownedProject.ownerId).toBe(bootstrapAdmin.id);
-      expect(assignedTicket.assigneeId).toBeNull();
-      expect(transactionManager.save).toHaveBeenCalledWith(Project, ownedProject);
-      expect(transactionManager.save).toHaveBeenCalledWith(Ticket, assignedTicket);
+      expect(doneTicket.assigneeId).toBeNull();
+      expect(activeTicket.assigneeId).toBe(42);
+      expect(transactionManager.save).toHaveBeenCalledWith(
+        Project,
+        ownedProject,
+      );
+      expect(transactionManager.save).toHaveBeenCalledWith(Ticket, doneTicket);
+      expect(transactionManager.save).toHaveBeenCalledWith(
+        Ticket,
+        activeTicket,
+      );
+      expect(qb.innerJoin).toHaveBeenCalledWith(
+        'tickets',
+        PROJECT_ASSIGNEE_TICKET_ALIAS,
+        PROJECT_ASSIGNEE_JOIN_CONDITION,
+        { projectId: activeTicket.projectId },
+      );
+      expect(qb.leftJoin).toHaveBeenCalledWith(
+        'tickets',
+        'ticket',
+        OPEN_TICKET_JOIN_CONDITION,
+        { projectId: activeTicket.projectId, done: TicketStatus.DONE },
+      );
+      expect(qb.andWhere).toHaveBeenCalledWith('user.id != :excludeUserId', {
+        excludeUserId: mockUser.id,
+      });
+      expect(qb.orderBy).toHaveBeenCalledWith(OPEN_TICKET_COUNT_SQL, 'ASC');
+      expect(qb.addOrderBy).toHaveBeenCalledWith('user.createdAt', 'ASC');
       expect(transactionManager.create).toHaveBeenCalledWith(
         AuditLog,
         expect.objectContaining({
@@ -469,7 +538,17 @@ describe('UserService', () => {
         expect.objectContaining({
           action: AuditAction.UPDATE,
           entityType: 'TICKET',
-          entityId: assignedTicket.id,
+          entityId: doneTicket.id,
+          performedBy: null,
+          actor: 'SYSTEM',
+        }),
+      );
+      expect(transactionManager.create).toHaveBeenCalledWith(
+        AuditLog,
+        expect.objectContaining({
+          action: AuditAction.UPDATE,
+          entityType: 'TICKET',
+          entityId: activeTicket.id,
           performedBy: null,
           actor: 'SYSTEM',
         }),
@@ -478,10 +557,46 @@ describe('UserService', () => {
         AuditLog,
         expect.arrayContaining([
           expect.objectContaining({ entityType: 'PROJECT' }),
-          expect.objectContaining({ entityType: 'TICKET' }),
+          expect.objectContaining({ entityId: doneTicket.id }),
+          expect.objectContaining({ entityId: activeTicket.id }),
         ]),
       );
       expect(transactionManager.remove).toHaveBeenCalledWith(User, mockUser);
+    });
+
+    it('should leave active assigned tickets unassigned when no project developer candidate exists', async () => {
+      const activeTicket = {
+        id: 30,
+        assigneeId: mockUser.id,
+        status: TicketStatus.TODO,
+        projectId: 8,
+      } as Ticket;
+      const qb = mockWorkloadQb();
+      qb.getRawOne.mockResolvedValue(undefined);
+
+      repo.findOneBy
+        .mockResolvedValueOnce(mockUser)
+        .mockResolvedValueOnce(bootstrapAdmin);
+      transactionManager.find
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([activeTicket]);
+
+      await service.remove(mockUser.id);
+
+      expect(activeTicket.assigneeId).toBeNull();
+      expect(transactionManager.save).toHaveBeenCalledWith(
+        Ticket,
+        activeTicket,
+      );
+      expect(transactionManager.create).toHaveBeenCalledWith(
+        AuditLog,
+        expect.objectContaining({
+          action: AuditAction.UPDATE,
+          entityType: 'TICKET',
+          entityId: activeTicket.id,
+          actor: 'SYSTEM',
+        }),
+      );
     });
 
     it('should reject deleting the bootstrap administrator', async () => {

@@ -1,10 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
-import {
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
+import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { ProjectService } from './project.service';
 import { Project } from './project.entity';
 import { Ticket } from '../ticket/ticket.entity';
@@ -25,46 +22,25 @@ const mockProject: Project = {
   deletedAt: null,
 };
 
-const mockTicket = {
-  id: 10,
-  title: 'Ticket',
-  description: 'Desc',
-  status: 'TODO' as never,
-  priority: 'HIGH' as never,
-  type: 'BUG' as never,
-  projectId: 1,
-  assigneeId: null,
-  dueDate: null,
-  isOverdue: false,
-  blockedBy: [],
-  version: 1,
-  createdAt: now,
-  updatedAt: now,
-  deletedAt: null,
-  project: undefined as never,
-  assignee: null,
-} as Ticket;
-
 describe('ProjectService', () => {
   let service: ProjectService;
   let repo: jest.Mocked<Repository<Project>>;
   let userService: jest.Mocked<UserService>;
   let transactionManager: {
-    find: jest.Mock;
-    softRemove: jest.Mock;
-    restore: jest.Mock;
+    findOne: jest.Mock;
+    update: jest.Mock;
   };
   let dataSource: { transaction: jest.Mock };
 
   beforeEach(async () => {
     transactionManager = {
-      find: jest.fn(),
-      softRemove: jest.fn(),
-      restore: jest.fn(),
+      findOne: jest.fn(),
+      update: jest.fn(),
     };
     dataSource = {
-      transaction: jest.fn(async (cb: (manager: typeof transactionManager) => Promise<void>) =>
-        cb(transactionManager),
+      transaction: jest.fn(
+        async (cb: (manager: typeof transactionManager) => Promise<void>) =>
+          cb(transactionManager),
       ),
     };
 
@@ -164,9 +140,9 @@ describe('ProjectService', () => {
         new NotFoundException('User with ID 999 not found'),
       );
 
-      await expect(
-        service.create({ ...dto, ownerId: 999 }),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.create({ ...dto, ownerId: 999 })).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('should re-throw unexpected errors from owner lookup', async () => {
@@ -208,45 +184,52 @@ describe('ProjectService', () => {
 
     it('should throw NotFoundException when updating a non-existent project', async () => {
       repo.findOneBy.mockResolvedValue(null);
-      await expect(service.update(999, dto)).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(service.update(999, dto)).rejects.toThrow(NotFoundException);
     });
   });
 
   // ---------- softRemove ----------
 
   describe('softRemove', () => {
-    it('should cascade soft-delete active tickets then the project in one transaction', async () => {
+    it('should cascade soft-delete active tickets and the project with one exact timestamp in one transaction', async () => {
       repo.findOneBy.mockResolvedValue(mockProject);
-      transactionManager.find.mockResolvedValue([mockTicket]);
-      transactionManager.softRemove.mockResolvedValue(undefined);
+      transactionManager.update.mockResolvedValue({
+        affected: 1,
+        raw: [],
+        generatedMaps: [],
+      });
 
       await expect(service.softRemove(1)).resolves.toBeUndefined();
 
       expect(dataSource.transaction).toHaveBeenCalled();
-      expect(transactionManager.find).toHaveBeenCalledWith(Ticket, {
-        where: { projectId: 1 },
-      });
-      expect(transactionManager.softRemove).toHaveBeenCalledWith(Ticket, [
-        mockTicket,
-      ]);
-      expect(transactionManager.softRemove).toHaveBeenCalledWith(
-        Project,
-        mockProject,
+      expect(transactionManager.update).toHaveBeenCalledTimes(2);
+      const ticketUpdate = transactionManager.update.mock.calls.find(
+        ([entity]) => entity === Ticket,
       );
+      const projectUpdate = transactionManager.update.mock.calls.find(
+        ([entity]) => entity === Project,
+      );
+      expect(ticketUpdate).toBeDefined();
+      expect(projectUpdate).toBeDefined();
+      expect(ticketUpdate![1]).toMatchObject({ projectId: 1 });
+      expect(projectUpdate![1]).toBe(1);
+      expect(ticketUpdate![2].deletedAt).toBe(projectUpdate![2].deletedAt);
     });
 
-    it('should soft-delete the project when it has no active tickets', async () => {
+    it('should still soft-delete the project when it has no active tickets', async () => {
       repo.findOneBy.mockResolvedValue(mockProject);
-      transactionManager.find.mockResolvedValue([]);
+      transactionManager.update.mockResolvedValue({
+        affected: 0,
+        raw: [],
+        generatedMaps: [],
+      });
 
       await expect(service.softRemove(1)).resolves.toBeUndefined();
 
-      expect(transactionManager.softRemove).toHaveBeenCalledTimes(1);
-      expect(transactionManager.softRemove).toHaveBeenCalledWith(
+      expect(transactionManager.update).toHaveBeenCalledWith(
         Project,
-        mockProject,
+        1,
+        expect.objectContaining({ deletedAt: expect.any(Date) }),
       );
     });
 
@@ -277,27 +260,44 @@ describe('ProjectService', () => {
   // ---------- restore ----------
 
   describe('restore', () => {
-    it('should restore the project and its soft-deleted tickets in one transaction', async () => {
-      transactionManager.restore
-        .mockResolvedValueOnce({ affected: 1, raw: [], generatedMaps: [] })
-        .mockResolvedValueOnce({ affected: 2, raw: [], generatedMaps: [] });
+    it('should restore the project and only tickets deleted at the project deletion timestamp', async () => {
+      const deletedAt = new Date('2026-05-01T10:00:00.000Z');
+      transactionManager.findOne.mockResolvedValue({
+        ...mockProject,
+        deletedAt,
+      });
+      transactionManager.update.mockResolvedValue({
+        affected: 1,
+        raw: [],
+        generatedMaps: [],
+      });
 
       await expect(service.restore(1)).resolves.toBeUndefined();
 
       expect(dataSource.transaction).toHaveBeenCalled();
-      expect(transactionManager.restore).toHaveBeenCalledWith(Project, 1);
-      expect(transactionManager.restore).toHaveBeenCalledWith(Ticket, {
-        projectId: 1,
+      expect(transactionManager.findOne).toHaveBeenCalledWith(Project, {
+        where: { id: 1 },
+        withDeleted: true,
       });
+      expect(transactionManager.update).toHaveBeenCalledWith(Project, 1, {
+        deletedAt: null,
+      });
+      expect(transactionManager.update).toHaveBeenCalledWith(
+        Ticket,
+        { projectId: 1, deletedAt },
+        { deletedAt: null },
+      );
     });
 
     it('should throw NotFoundException when no soft-deleted project found', async () => {
-      transactionManager.restore.mockResolvedValue({
-        affected: 0,
-        raw: [],
-        generatedMaps: [],
-      });
+      transactionManager.findOne.mockResolvedValue(null);
       await expect(service.restore(999)).rejects.toThrow(NotFoundException);
+    });
+
+    it('should throw NotFoundException when the project is active, not soft-deleted', async () => {
+      transactionManager.findOne.mockResolvedValue(mockProject);
+      await expect(service.restore(1)).rejects.toThrow(NotFoundException);
+      expect(transactionManager.update).not.toHaveBeenCalled();
     });
   });
 });

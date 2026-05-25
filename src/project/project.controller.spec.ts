@@ -24,7 +24,9 @@ const mockProject: Project = {
 };
 
 const mockRequest = (userId: number): Request =>
-  ({ user: { userId, username: 'admin', role: Role.ADMIN } }) as unknown as Request;
+  ({
+    user: { userId, username: 'admin', role: Role.ADMIN },
+  }) as unknown as Request;
 
 describe('ProjectController', () => {
   let controller: ProjectController;
@@ -127,7 +129,9 @@ describe('ProjectController', () => {
 
     it('should propagate BadRequestException for invalid owner', async () => {
       service.create.mockRejectedValue(new BadRequestException());
-      await expect(controller.create({ ...dto, ownerId: 999 }, mockRequest(10))).rejects.toThrow(BadRequestException);
+      await expect(
+        controller.create({ ...dto, ownerId: 999 }, mockRequest(10)),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 
@@ -135,7 +139,10 @@ describe('ProjectController', () => {
     const dto: UpdateProjectDto = { name: 'Updated Name' };
 
     it('should update the project and log audit without returning a body', async () => {
-      service.update.mockResolvedValue({ ...mockProject, name: 'Updated Name' });
+      service.update.mockResolvedValue({
+        ...mockProject,
+        name: 'Updated Name',
+      });
       const req = mockRequest(10);
 
       const result = await controller.update(1, dto, req);
@@ -145,7 +152,9 @@ describe('ProjectController', () => {
 
     it('should propagate NotFoundException', async () => {
       service.update.mockRejectedValue(new NotFoundException());
-      await expect(controller.update(999, dto, mockRequest(10))).rejects.toThrow(NotFoundException);
+      await expect(
+        controller.update(999, dto, mockRequest(10)),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 
@@ -160,7 +169,9 @@ describe('ProjectController', () => {
 
     it('should propagate NotFoundException', async () => {
       service.softRemove.mockRejectedValue(new NotFoundException());
-      await expect(controller.remove(999, mockRequest(10))).rejects.toThrow(NotFoundException);
+      await expect(controller.remove(999, mockRequest(10))).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -175,7 +186,9 @@ describe('ProjectController', () => {
 
     it('should propagate NotFoundException', async () => {
       service.restore.mockRejectedValue(new NotFoundException());
-      await expect(controller.restore(999, mockRequest(10))).rejects.toThrow(NotFoundException);
+      await expect(controller.restore(999, mockRequest(10))).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 });

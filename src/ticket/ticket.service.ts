@@ -11,9 +11,11 @@ import {
   Repository,
   OptimisticLockVersionMismatchError,
   DataSource,
+  EntityManager,
 } from 'typeorm';
 import { stringify } from 'csv-stringify/sync';
 import { parse } from 'csv-parse';
+import { isISO8601 } from 'class-validator';
 import { Ticket } from './ticket.entity';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
@@ -24,7 +26,7 @@ import { TicketType } from './enums/ticket-type.enum';
 import { ProjectService } from '../project/project.service';
 import { UserService } from '../user/user.service';
 import { User } from '../user/user.entity';
-import { Role } from '../user/role.enum';
+import { AuditLog } from '../audit-log/audit-log.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { AuditAction } from '../audit-log/enums/audit-action.enum';
 import {
@@ -32,10 +34,11 @@ import {
   isPgLockNotAvailableError,
 } from '../common/pg-nowait-row-lock';
 import { Readable } from 'stream';
+import { CsvImportRowError, CsvImportSummary } from './csv-import-row-error';
 import {
-  CsvImportRowError,
-  CsvImportSummary,
-} from './csv-import-row-error';
+  OPEN_TICKET_COUNT_SQL,
+  applyProjectDeveloperWorkloadQuery,
+} from './ticket-workload.query';
 
 /** Maximum number of data rows (excluding the header) per ticket CSV import. */
 export const MAX_TICKET_CSV_IMPORT_ROWS = 10_000;
@@ -49,6 +52,13 @@ const CREATE_TICKET_DESCRIPTION_MAX_LEN = 5000;
 const ALLOWED_STATUSES = 'TODO, IN_PROGRESS, IN_REVIEW, DONE';
 const ALLOWED_PRIORITIES = 'LOW, MEDIUM, HIGH, CRITICAL';
 const ALLOWED_TYPES = 'BUG, FEATURE, TECHNICAL';
+
+function isValidIsoDate(value: string): boolean {
+  return (
+    isISO8601(value, { strict: true, strictSeparator: true }) &&
+    !Number.isNaN(new Date(value).getTime())
+  );
+}
 
 function csvStatusMessage(value: string): string {
   const display = value.length > 0 ? value : '(empty)';
@@ -227,11 +237,7 @@ export class TicketService {
               'dep."ticketId" = :ticketId',
               { ticketId: id },
             )
-            .innerJoin(
-              'tickets',
-              'blocker',
-              'blocker.id = dep."blockedById"',
-            )
+            .innerJoin('tickets', 'blocker', 'blocker.id = dep."blockedById"')
             .where('blocker.status != :done', { done: TicketStatus.DONE })
             .getCount();
           if (unresolvedCount > 0) {
@@ -242,7 +248,7 @@ export class TicketService {
         }
       }
 
-      if (dto.assigneeId !== undefined) {
+      if (dto.assigneeId !== undefined && dto.assigneeId !== null) {
         try {
           await this.userService.findOne(dto.assigneeId);
         } catch (error: unknown) {
@@ -265,6 +271,9 @@ export class TicketService {
       if (dto.assigneeId !== undefined) ticket.assigneeId = dto.assigneeId;
       if (dto.dueDate !== undefined) {
         ticket.dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
+        if (ticket.dueDate === null || ticket.dueDate.getTime() > Date.now()) {
+          ticket.isOverdue = false;
+        }
       }
 
       let saved: Ticket;
@@ -320,8 +329,30 @@ export class TicketService {
    *
    * @param id - The numeric ticket identifier.
    * @throws {NotFoundException} When no soft-deleted ticket with the given ID exists.
+   * @throws {BadRequestException} When the parent project is missing or soft-deleted.
    */
   async restore(id: number): Promise<void> {
+    const ticket = await this.ticketRepository.findOne({
+      where: { id },
+      withDeleted: true,
+    });
+    if (!ticket?.deletedAt) {
+      throw new NotFoundException(
+        `Soft-deleted ticket with ID ${id} not found`,
+      );
+    }
+
+    try {
+      await this.projectService.findOne(ticket.projectId);
+    } catch (error: unknown) {
+      if (error instanceof NotFoundException) {
+        throw new BadRequestException(
+          `Cannot restore ticket ${id} because parent project ${ticket.projectId} does not exist or is soft-deleted`,
+        );
+      }
+      throw error;
+    }
+
     const result = await this.ticketRepository.restore(id);
     if (result.affected === 0) {
       throw new NotFoundException(
@@ -330,7 +361,19 @@ export class TicketService {
     }
   }
 
-  // ── Auto-Assignment (TDP 3.8) ────────────────────────────────────
+  // ── Auto-Assignment (TDP 3.8) & Workload API ─────────────────────
+
+  /**
+   * Base aggregate query: project-linked DEVELOPER users with per-project
+   * open-ticket counts. Uses LEFT JOIN so developers with only DONE tickets
+   * still appear with zero open workload.
+   */
+  private createDeveloperWorkloadQuery(projectId: number) {
+    return applyProjectDeveloperWorkloadQuery(
+      this.userRepository.createQueryBuilder('user'),
+      projectId,
+    );
+  }
 
   /**
    * Selects the least-loaded DEVELOPER in the project and assigns
@@ -339,72 +382,61 @@ export class TicketService {
    *
    * @returns The updated ticket if assigned, or `null` if no DEVELOPERs exist.
    */
-  private async autoAssign(ticket: Ticket): Promise<Ticket | null> {
-    const result = await this.userRepository
-      .createQueryBuilder('user')
-      .leftJoin(
-        'tickets',
-        'ticket',
-        'ticket."assigneeId" = user.id AND ticket."projectId" = :projectId AND ticket.status != :done AND ticket."deletedAt" IS NULL',
-        { projectId: ticket.projectId, done: TicketStatus.DONE },
-      )
-      .where('user.role = :role', { role: Role.DEVELOPER })
-      .select('user.id', 'userId')
-      .addSelect('COUNT(ticket.id)', 'openTicketCount')
-      .groupBy('user.id')
-      .addGroupBy('user.createdAt')
-      .orderBy('COUNT(ticket.id)', 'ASC')
+  private async autoAssign(
+    ticket: Ticket,
+    manager?: EntityManager,
+  ): Promise<Ticket | null> {
+    if (!manager) {
+      return this.dataSource.transaction((transactionManager) =>
+        this.autoAssign(ticket, transactionManager),
+      );
+    }
+
+    const result = await this.createDeveloperWorkloadQuery(ticket.projectId)
+      .orderBy(OPEN_TICKET_COUNT_SQL, 'ASC')
       .addOrderBy('user.createdAt', 'ASC')
       .limit(1)
       .getRawOne<{ userId: number; openTicketCount: string }>();
 
     if (!result) return null;
 
-    ticket.assigneeId = result.userId;
-    const saved = await this.ticketRepository.save(ticket);
-
-    await this.auditLogService.log({
+    ticket.assigneeId = Number(result.userId);
+    const saved = await manager.save(Ticket, ticket);
+    const auditLog = manager.create(AuditLog, {
       action: AuditAction.AUTO_ASSIGN,
       entityType: 'TICKET',
       entityId: ticket.id,
       performedBy: null,
       actor: 'SYSTEM',
     });
+    await manager.save(AuditLog, auditLog);
 
     return saved;
   }
-
-  // ── Workload API ──────────────────────────────────────────────────
 
   /**
    * Returns workload data for all DEVELOPER users, scoped to a project.
    *
    * @param projectId - The project to compute workload for.
    * @returns An array of `{ userId, username, openTicketCount }` sorted
-   *          by `openTicketCount` ascending.
-   * @throws {NotFoundException} When the project does not exist.
+   *          by `openTicketCount` ascending, then `user.createdAt` ascending.
+   * @throws {NotFoundException} When the project does not exist or is soft-deleted.
    */
   async getProjectWorkload(
     projectId: number,
   ): Promise<{ userId: number; username: string; openTicketCount: number }[]> {
     await this.projectService.findOne(projectId);
 
-    const rows = await this.userRepository
-      .createQueryBuilder('user')
-      .leftJoin(
-        'tickets',
-        'ticket',
-        'ticket."assigneeId" = user.id AND ticket."projectId" = :projectId AND ticket.status != :done AND ticket."deletedAt" IS NULL',
-        { projectId, done: TicketStatus.DONE },
-      )
-      .where('user.role = :role', { role: Role.DEVELOPER })
-      .select('user.id', 'userId')
+    const rows = await this.createDeveloperWorkloadQuery(projectId)
       .addSelect('user.username', 'username')
-      .addSelect('COUNT(ticket.id)', 'openTicketCount')
-      .groupBy('user.id')
       .addGroupBy('user.username')
-      .orderBy('COUNT(ticket.id)', 'ASC')
-      .getRawMany<{ userId: number; username: string; openTicketCount: string }>();
+      .orderBy(OPEN_TICKET_COUNT_SQL, 'ASC')
+      .addOrderBy('user.createdAt', 'ASC')
+      .getRawMany<{
+        userId: number;
+        username: string;
+        openTicketCount: string;
+      }>();
 
     return rows.map((r) => ({
       userId: Number(r.userId),
@@ -459,7 +491,8 @@ export class TicketService {
    * Imports tickets from a CSV buffer into a project.
    *
    * Rows are validated like **`CreateTicketDto`**: lengths, enums, optional
-   * **`assigneeId`** checked as an integer referencing an existing user.
+   * **`assigneeId`** checked as an integer referencing an existing user, and
+   * optional **`dueDate`** checked as ISO-8601 when the column is present.
    * Invalid rows increment **`failed`** and **`errors`**; valid rows persist.
    * More than {@link MAX_TICKET_CSV_IMPORT_ROWS} **data rows** (after the header)
    * or malformed CSV causes **`BadRequestException`** — no partial import in those cases.
@@ -515,6 +548,7 @@ export class TicketService {
       const priorityRaw = (row['priority'] ?? '').trim();
       const typeRaw = (row['type'] ?? '').trim();
       const assigneeRaw = (row['assigneeId'] ?? '').trim();
+      const dueDateRaw = (row['dueDate'] ?? '').trim();
       const titleForError = title.length > 0 ? title : '(untitled)';
 
       if (!title) {
@@ -598,6 +632,20 @@ export class TicketService {
         }
       }
 
+      let dueDate: Date | null = null;
+      if (dueDateRaw.length > 0) {
+        if (!isValidIsoDate(dueDateRaw)) {
+          rowFieldErrors.push({
+            row: rowNum,
+            title: titleForError,
+            field: 'dueDate',
+            message: 'dueDate must be a valid ISO-8601 date string',
+          });
+        } else {
+          dueDate = new Date(dueDateRaw);
+        }
+      }
+
       if (rowFieldErrors.length > 0) {
         failed++;
         errors.push(...rowFieldErrors);
@@ -630,6 +678,7 @@ export class TicketService {
         type: typeRaw as TicketType,
         projectId,
         assigneeId,
+        dueDate,
       });
 
       try {
@@ -665,9 +714,7 @@ export class TicketService {
    * consumption proportional to the current row rather than the
    * entire file.
    */
-  private parseCsvStream(
-    buffer: Buffer,
-  ): Promise<Record<string, string>[]> {
+  private parseCsvStream(buffer: Buffer): Promise<Record<string, string>[]> {
     return new Promise((resolve, reject) => {
       const records: Record<string, string>[] = [];
       const stream = Readable.from(buffer);
@@ -798,10 +845,7 @@ export class TicketService {
    * @param blockerId - The blocker ticket to remove.
    * @throws {NotFoundException} When the ticket does not exist or the dependency is not found.
    */
-  async removeDependency(
-    ticketId: number,
-    blockerId: number,
-  ): Promise<void> {
+  async removeDependency(ticketId: number, blockerId: number): Promise<void> {
     const ticket = await this.ticketRepository.findOne({
       where: { id: ticketId },
       relations: ['blockedBy'],

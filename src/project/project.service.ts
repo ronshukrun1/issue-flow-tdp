@@ -6,7 +6,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, IsNull } from 'typeorm';
 import { Project } from './project.entity';
 import { Ticket } from '../ticket/ticket.entity';
 import { CreateProjectDto } from './dto/create-project.dto';
@@ -114,14 +114,18 @@ export class ProjectService {
    * @throws {NotFoundException} When no active project with the given ID exists.
    */
   async softRemove(id: number): Promise<void> {
-    const project = await this.findOne(id);
+    await this.findOne(id);
 
     await this.dataSource.transaction(async (manager) => {
-      const tickets = await manager.find(Ticket, { where: { projectId: id } });
-      if (tickets.length > 0) {
-        await manager.softRemove(Ticket, tickets);
-      }
-      await manager.softRemove(Project, project);
+      const deletionTimestamp = new Date();
+      await Promise.all([
+        manager.update(
+          Ticket,
+          { projectId: id, deletedAt: IsNull() },
+          { deletedAt: deletionTimestamp },
+        ),
+        manager.update(Project, id, { deletedAt: deletionTimestamp }),
+      ]);
     });
   }
 
@@ -139,21 +143,33 @@ export class ProjectService {
   }
 
   /**
-   * Restores a previously soft-deleted project and concurrently restores
-   * all soft-deleted tickets belonging to that project.
+   * Restores a previously soft-deleted project and restores only the tickets
+   * that were soft-deleted by the same project deletion timestamp.
    *
    * @param id - The numeric project identifier.
    * @throws {NotFoundException} When no soft-deleted project with the given ID exists.
    */
   async restore(id: number): Promise<void> {
     await this.dataSource.transaction(async (manager) => {
-      const result = await manager.restore(Project, id);
-      if (result.affected === 0) {
+      const project = await manager.findOne(Project, {
+        where: { id },
+        withDeleted: true,
+      });
+      if (!project?.deletedAt) {
         throw new NotFoundException(
           `Soft-deleted project with ID ${id} not found`,
         );
       }
-      await manager.restore(Ticket, { projectId: id });
+
+      const projectDeletedAt = project.deletedAt;
+      await Promise.all([
+        manager.update(Project, id, { deletedAt: null }),
+        manager.update(
+          Ticket,
+          { projectId: id, deletedAt: projectDeletedAt },
+          { deletedAt: null },
+        ),
+      ]);
     });
   }
 }

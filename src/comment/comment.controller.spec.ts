@@ -1,5 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import {
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { Request } from 'express';
 import { CommentController } from './comment.controller';
 import { CommentService } from './comment.service';
@@ -23,6 +27,12 @@ const mockUser: User = {
   updatedAt: now,
 };
 
+const mockMentionedUser = {
+  id: mockUser.id,
+  username: mockUser.username,
+  fullName: mockUser.fullName,
+} as User;
+
 const mockComment: Comment = {
   id: 1,
   ticketId: 1,
@@ -31,17 +41,21 @@ const mockComment: Comment = {
   author: undefined as never,
   content: 'Hello @bob',
   mentionLinks: [{ commentsId: 1, usersId: mockUser.id, user: mockUser }],
-  mentionedUsers: [mockUser],
+  mentionedUsers: [mockMentionedUser],
   version: 1,
   createdAt: now,
   updatedAt: now,
 };
 
 const mockRequest = (userId: number): Request =>
-  ({ user: { userId, username: 'alice', role: Role.DEVELOPER } }) as unknown as Request;
+  ({
+    user: { userId, username: 'alice', role: Role.DEVELOPER },
+  }) as unknown as Request;
 
 const mockAdminRequest = (userId: number): Request =>
-  ({ user: { userId, username: 'admin', role: Role.ADMIN } }) as unknown as Request;
+  ({
+    user: { userId, username: 'admin', role: Role.ADMIN },
+  }) as unknown as Request;
 
 describe('CommentController', () => {
   let controller: CommentController;
@@ -85,14 +99,16 @@ describe('CommentController', () => {
 
     it('should propagate NotFoundException', async () => {
       service.findByTicket.mockRejectedValue(new NotFoundException());
-      await expect(controller.findByTicket(999)).rejects.toThrow(NotFoundException);
+      await expect(controller.findByTicket(999)).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
   describe('create', () => {
-    const dto: CreateCommentDto = { content: 'Hello @bob' };
+    const dto: CreateCommentDto = { authorId: 1, content: 'Hello @bob' };
 
-    it('should extract userId from JWT, create comment, and log audit', async () => {
+    it('should verify authorId matches JWT, create comment, and log audit', async () => {
       service.create.mockResolvedValue(mockComment);
       const req = mockRequest(1);
 
@@ -104,9 +120,18 @@ describe('CommentController', () => {
       );
     });
 
+    it('should reject when authorId does not match JWT userId', async () => {
+      await expect(
+        controller.create(1, { ...dto, authorId: 2 }, mockRequest(1)),
+      ).rejects.toThrow('authorId does not match the authenticated user');
+      expect(service.create).not.toHaveBeenCalled();
+    });
+
     it('should propagate BadRequestException', async () => {
       service.create.mockRejectedValue(new BadRequestException());
-      await expect(controller.create(1, dto, mockRequest(999))).rejects.toThrow(BadRequestException);
+      await expect(controller.create(1, dto, mockRequest(1))).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 
@@ -114,7 +139,10 @@ describe('CommentController', () => {
     const dto: UpdateCommentDto = { content: 'Updated @alice' };
 
     it('should update the comment and log audit without returning a body', async () => {
-      service.update.mockResolvedValue({ ...mockComment, content: 'Updated @alice' });
+      service.update.mockResolvedValue({
+        ...mockComment,
+        content: 'Updated @alice',
+      });
       const req = mockRequest(1);
 
       const result = await controller.update(1, 1, dto, req);
@@ -139,14 +167,16 @@ describe('CommentController', () => {
 
     it('should propagate ForbiddenException', async () => {
       service.update.mockRejectedValue(new ForbiddenException());
-      await expect(controller.update(1, 1, dto, mockRequest(1))).rejects.toThrow(
-        ForbiddenException,
-      );
+      await expect(
+        controller.update(1, 1, dto, mockRequest(1)),
+      ).rejects.toThrow(ForbiddenException);
     });
 
     it('should propagate NotFoundException', async () => {
       service.update.mockRejectedValue(new NotFoundException());
-      await expect(controller.update(1, 999, dto, mockRequest(1))).rejects.toThrow(NotFoundException);
+      await expect(
+        controller.update(1, 999, dto, mockRequest(1)),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 
@@ -172,7 +202,9 @@ describe('CommentController', () => {
 
     it('should propagate NotFoundException', async () => {
       service.remove.mockRejectedValue(new NotFoundException());
-      await expect(controller.remove(1, 999, mockRequest(1))).rejects.toThrow(NotFoundException);
+      await expect(controller.remove(1, 999, mockRequest(1))).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 });

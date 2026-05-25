@@ -2,7 +2,10 @@ import { ApiProperty } from '@nestjs/swagger';
 
 /** OpenAPI schema for a single CSV import row error. */
 export class CsvImportRowErrorDto {
-  @ApiProperty({ example: 4, description: '1-based CSV row number (header is row 1)' })
+  @ApiProperty({
+    example: 4,
+    description: '1-based CSV row number (header is row 1)',
+  })
   row!: number;
 
   @ApiProperty({ example: 'Fix login bug' })

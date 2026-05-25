@@ -4,7 +4,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not, LessThan } from 'typeorm';
 import { Ticket } from '../ticket/ticket.entity';
 import { TicketStatus } from '../ticket/enums/ticket-status.enum';
-import { TicketPriority, nextPriority } from '../ticket/enums/ticket-priority.enum';
+import {
+  TicketPriority,
+  nextPriority,
+} from '../ticket/enums/ticket-priority.enum';
 import { AuditLogService, AuditLogEntry } from '../audit-log/audit-log.service';
 import { AuditAction } from '../audit-log/enums/audit-action.enum';
 
@@ -40,7 +43,9 @@ export class EscalationScheduler {
   @Cron(CronExpression.EVERY_MINUTE)
   async handleEscalation(): Promise<void> {
     if (this.isRunning) {
-      this.logger.warn('Skipping escalation run — previous run still in progress');
+      this.logger.warn(
+        'Skipping escalation run — previous run still in progress',
+      );
       return;
     }
 
